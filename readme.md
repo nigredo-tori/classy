@@ -42,7 +42,7 @@ Highly experimental. API and behaviour subject to change.
 
 ## Credits
 
-- [:nigredo-tori][nigredo-tori]
+- [nigredo-tori][link-author]
 
 ## License
 
@@ -50,3 +50,5 @@ The Unlicense. Please see [License File](license.md) for more information.
 
 [ico-license]: https://img.shields.io/badge/license-Unlicense-brightgreen.svg?style=flat-square
 [ico-stability]: https://img.shields.io/badge/stability-experimental-orange.svg?style=flat-square
+
+[link-author]: https://github.com/nigredo-tori
