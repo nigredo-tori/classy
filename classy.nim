@@ -26,11 +26,30 @@ type
   TypeclassOptions = object
     exported: bool
 
+  # https://github.com/nim-lang/Nim/issues/4952
+  TransformTuple = object
+    newNode: NimNode
+    recurse: bool
+
+proc mkTransformTuple(newNode: NimNode, recurse: bool): auto =
+  TransformTuple(newNode: newNode, recurse: recurse)
+
 proc replaceInBody(
   tree: var NimNode,
   param: string,
   member: TypeclassMember
 ) {.compileTime.}
+
+proc transformDown(
+  tree: NimNode,
+  f: NimNode -> TransformTuple
+): NimNode {.compileTime.} =
+  let tup = f(tree.copyNimTree)
+
+  result = tup.newNode
+  if tup.recurse:
+    for i in 0..<result.len:
+      result[i] = transformDown(result[i], f)
 
 proc getArity(tree: NimNode): int {.compileTime.} =
   # Just count all underscore idents
@@ -59,19 +78,20 @@ proc instantiateConstructor(
 ): NimNode {.compileTime.} =
 
   proc replaceUnderscores(
-    tree: var NimNode, args: var seq[NimNode]
-  ) =
+    tree: NimNode, args: seq[NimNode]
+  ): (NimNode, seq[NimNode]) =
+    var argsNew = args
     # Traverse `tree` and replace all underscore identifiers
-    # with nodes from `args` in order. Mutates both `tree`
-    # and `args` for ease of implementation.
-    if tree.eqIdent("_"):
-      tree = args[0]
-      args.del(0)
-    else:
-      for i in 0..<tree.len:
-        var child = tree[i]
-        replaceUnderscores(child, args)
-        tree[i] = child
+    # with nodes from `args` in order.
+    let treeNew = transformDown(tree) do (sub: NimNode) -> auto:
+      if sub.eqIdent("_"):
+        let res = argsNew[0].copyNimTree
+        argsNew.del(0)
+        mkTransformTuple(res, false)
+      else:
+        mkTransformTuple(sub, true)
+
+    (treeNew, argsNew)
 
   tree.expectKind(nnkBracketExpr)
   # First one is the constructor itself
@@ -90,12 +110,8 @@ proc instantiateConstructor(
       "In expression:\L " & $toStrLit(tree)
     error(msg)
 
-  result = copyNimTree(member.typeExpr)
-  for i in 0..<result.len:
-    var child = result[i]
-    replaceUnderscores(child, args)
-    result[i] = child
-  assert: args.len == 0
+  (result, args) = replaceUnderscores(member.typeExpr, args)
+  doAssert: args.len == 0
 
 proc parseMemberParams(
   tree: NimNode
@@ -116,14 +132,11 @@ proc parseMemberParams(
       result[i] = newIdentDefs(n, newEmptyNode())
 
 proc replace(n: NimNode, subst: seq[(NimNode, NimNode)]): NimNode {.compileTime.} =
-  for pair in subst:
-    if n == pair[0]: return pair[1].copyNimTree
-
-  # Recurse
-  result = n.copyNimNode
-  for i in 0..<n.len:
-    result.add(replace(n[i], subst))
-  return result
+  transformDown(n) do (sub: NimNode) -> auto:
+    for pair in subst:
+      if sub == pair[0]:
+        return mkTransformTuple(pair[1], false)
+    return mkTransformTuple(sub, true)
 
 # Ugly workaround for Nim bug:
 # https://github.com/nim-lang/Nim/issues/4939
@@ -233,94 +246,103 @@ proc replaceInBody(
 ) =
   ## Replace occurrences of `param` in a tree
 
-  # concrete classes don't support argument injection
-  let isConstructor = member.arity > 0
-  if isConstructor and tree.matchesConstructor(param):
-    tree = member.instantiateConstructor(param, tree)
-  elif tree.matchesConcrete(param):
-    # Member without parameters is injected as-is
-    tree = member.typeExpr.copyNimTree
-  else:
-    # Recurse
-    for i in 0..<tree.len:
-      var sub = tree[i]
-      replaceInBody(sub, param, member)
-      tree[i] = sub
+  proc worker(sub: NimNode): TransformTuple =
+    # concrete classes don't support argument injection
+    let isConstructor = member.arity > 0
+    if isConstructor and sub.matchesConstructor(param):
+      mkTransformTuple(member.instantiateConstructor(param, sub), false)
+    elif sub.matchesConcrete(param):
+      # Member without parameters is injected as-is
+      mkTransformTuple(member.typeExpr.copyNimTree, false)
+    else:
+      mkTransformTuple(sub.copyNimTree, true)
+
+  let n0 = transformDown(tree, worker)
+  tree = n0
 
 proc replaceInProcs(
-  tree: var NimNode,
+  tree: NimNode,
   param: string,
   member: TypeclassMember
-) {.compileTime.} =
+): NimNode {.compileTime.} =
   ## Traverse `tree` looking for top-level procs, and replace
   ## `param` occurrences in each one with `member` instance.
-  case tree.kind
-  of RoutineNodes:
-    # Inject method parameters to proc's generic param list
-    var genParams = tree[2]
-    expectKind(genParams, {nnkEmpty, nnkGenericParams})
-    if genParams.kind == nnkEmpty and member.params.len > 0:
-      genParams = newNimNode(nnkGenericParams)
 
-    for p in member.params:
-      genParams.add(p.copyNimTree)
+  proc worker(sub: NimNode): TransformTuple =
+    case sub.kind
+    of RoutineNodes:
+      # Inject method parameters to proc's generic param list
+      # This will be returned
+      var res = sub
 
-    tree[2] = genParams
+      var genParams = sub[2]
+      expectKind(genParams, {nnkEmpty, nnkGenericParams})
+      if genParams.kind == nnkEmpty and member.params.len > 0:
+        genParams = newNimNode(nnkGenericParams)
 
-    # Replace in formal parameters
-    var formalParams = tree.params
-    replaceInBody(formalParams, param, member)
-    tree.params = formalParams
+      for p in member.params:
+        genParams.add(p.copyNimTree)
 
-    # Replace in proc body
-    var procBody = tree.body
-    replaceInBody(procBody, param, member)
-    tree.body = procBody
+      res[2] = genParams
 
-  else:
-    # Recurse
-    for i in 0..<tree.len:
-      var sub = tree[i]
-      replaceInProcs(sub, param, member)
-      tree[i] = sub
+      # Replace in formal parameters
+      var formalParams = sub.params
+      replaceInBody(formalParams, param, member)
+      res.params = formalParams
+
+      # Replace in proc body
+      var procBody = sub.body
+      replaceInBody(procBody, param, member)
+      res.body = procBody
+
+      # Do not recurse - we already replaced everything with
+      # replaceInBody
+      mkTransformTuple(res, false)
+    else:
+      mkTransformTuple(sub, true)
+
+  transformDown(tree, worker)
 
 proc removeSkippedProcs(
-  tree: var NimNode,
+  tree: NimNode,
   skipping: seq[NimNode]
-) {.compileTime.} =
+): NimNode {.compileTime.} =
   ## Traverse `tree` looking for top-level procs with names
   ## in `skipping` and remove their definitions.
-  case tree.kind
-  of RoutineNodes:
-    let nameNode = tree.name
-    if nameNode in skipping:
-      tree = newEmptyNode()
-  else:
-    # Recurse
-    for i in 0..<tree.len:
-      var sub = tree[i]
-      removeSkippedProcs(sub, skipping)
-      tree[i] = sub
+
+  proc worker(sub: NimNode): TransformTuple =
+    case sub.kind
+    of RoutineNodes:
+      let nameNode = sub.name
+      if nameNode in skipping:
+        mkTransformTuple(newEmptyNode(), false)
+      else:
+        mkTransformTuple(sub, false)
+    else:
+      mkTransformTuple(sub, true)
+
+  transformDown(tree, worker)
 
 proc addExportMarks(
-  tree: var NimNode,
+  tree: NimNode,
   exporting: ExportOptions
-) {.compileTime.} =
+): NimNode {.compileTime.} =
   proc contains(opts: ExportOptions, n: NimNode): bool =
     case opts.kind
     of eoNone: false
     of eoAll: true
     of eoSome: opts.patterns.contains(n)
 
-  let matches = tree.kind in RoutineNodes and exporting.contains(tree.name)
-  if matches:
-    tree.name = tree.name.postfix("*")
-  else:
-    # Recurse
-    for i in 0..<tree.len:
-      var sub = tree[i]
-      addExportMarks(sub, exporting)
-      tree[i] = sub
+  proc worker(sub: NimNode): TransformTuple =
+    let matches = sub.kind in RoutineNodes and exporting.contains(sub.name)
+    if matches:
+      let res = sub.copyNimTree
+      res.name = sub.name.postfix("*")
+      mkTransformTuple(res, false)
+    else:
+      mkTransformTuple(sub, true)
+
+  transformDown(tree, worker)
 
 proc instanceImpl(
   class: Typeclass,
@@ -328,9 +350,9 @@ proc instanceImpl(
   options: MemberOptions
 ): NimNode {.compileTime.} =
   result = class.body.copyNimTree
-  result.removeSkippedProcs(options.skipping)
-  result.replaceInProcs(class.param, member)
-  result.addExportMarks(options.exporting)
+  result = result.removeSkippedProcs(options.skipping)
+  result = result.replaceInProcs(class.param, member)
+  result = result.addExportMarks(options.exporting)
 
 # A hack to allow passing `Typeclass` values from the macro to
 # defined variables
