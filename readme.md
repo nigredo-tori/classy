@@ -18,7 +18,7 @@ $ nimble install classy
 ```nim
 import classy, future
 
-typeclass Functor, F:
+typeclass Functor, F[_]:
   # proc map[A, B](fa: F[A], g: A -> B): F[B]
   proc `$>`[A, B](fa: F[A], b: B): F[B] =
     fa.map((a: A) => g)
