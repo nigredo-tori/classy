@@ -50,7 +50,7 @@ suite "Typeclasses":
 
   test "Functor":
     shouldWork:
-      typeclass Functor, F:
+      typeclass Functor, F[_]:
         # Can't use forward declarations for generics
         # proc fmap[A, B](fa: F[A], g: A -> B): F[B]
 
@@ -64,7 +64,7 @@ suite "Typeclasses":
 
   test "Monad":
     shouldWork:
-      typeclass Monad, M:
+      typeclass Monad, M[_]:
         # Can't use forward declarations for generics
         # proc point[A](t: typedesc[M[A]], v: A): M[A]
         # proc flatMap[A, B](ma: M[A], f: A -> M[B]): M[B]
@@ -78,7 +78,7 @@ suite "Typeclasses":
         for a in ma:
           result.add(f(a))
 
-      instance Monad, seq
+      instance Monad, seq[_]
       check: join(@[@[1, 2], @[3]]) == @[1, 2, 3]
 
       # Should allow mixing parameters with concrete types and wildcards

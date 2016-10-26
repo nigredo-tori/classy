@@ -1,15 +1,34 @@
 import macros, future
-from sequtils import toSeq, applyIt
+from sequtils import toSeq, applyIt, allIt
 
 type
+  AbstractPattern = object
+    ## Type/pattern placeholder for typeclass declaration.
+    ##
+    ## Has either form `A` (placeholder for a concrete type) or `A[_,...]` (for
+    ## a type constructor).
+    ## Doesn't have to evaluate to concrete type after parameter substitution -
+    ## must be eliminated after typeclass instantiation.
+    ident: NimIdent
+    arity: Natural
+      ## types with arity of zero are considered concrete, with corresponding
+      ## matching rules
+
+  ConcretePattern = object
+    ## A tree with zero or more wildcards (_).
+    ##
+    ## Should evaluate to concrete type once all the wildcards are replaced with
+    ## types.
+    tree: NimNode
+    arity: Natural
+
   Typeclass = object
-    param: string
+    pattern: AbstractPattern
     body: NimNode
 
   TypeclassMember = object
+    pattern: ConcretePattern
     params: seq[NimNode]
-    typeExpr: NimNode
-    arity: int
 
   ExportOptionsKind = enum eoNone, eoSome, eoAll
   ExportOptions = object
@@ -35,10 +54,10 @@ proc mkTransformTuple(newNode: NimNode, recurse: bool): auto =
   TransformTuple(newNode: newNode, recurse: recurse)
 
 proc replaceInBody(
-  tree: var NimNode,
-  param: string,
-  member: TypeclassMember
-) {.compileTime.}
+  tree: NimNode,
+  abstract: AbstractPattern,
+  concrete: ConcretePattern
+): NimNode {.compileTime.}
 
 proc transformDown(
   tree: NimNode,
@@ -51,8 +70,22 @@ proc transformDown(
     for i in 0..<result.len:
       result[i] = transformDown(result[i], f)
 
+proc asTree(p: AbstractPattern): NimNode {.compileTime.} =
+  ## Restore `p`'s tree form
+  ##
+  ## Only useful for error messages - use fields for matching.
+  if p.arity == 0:
+    result = newIdentNode(p.ident)
+  else:
+    result = newTree(
+      nnkBracketExpr,
+      newIdentNode(p.ident)
+    )
+    for i in 1..p.arity:
+      result.add(newIdentNode("_"))
+
 proc getArity(tree: NimNode): int {.compileTime.} =
-  # Just count all underscore idents
+  ## Counts all underscore idents in `tree`
   if tree.eqIdent("_"):
     result = 1
   else:
@@ -60,21 +93,33 @@ proc getArity(tree: NimNode): int {.compileTime.} =
     for child in tree:
       result.inc(getArity(child))
 
-proc matchesConcrete(
-  tree: NimNode, pattern: string
+proc matchesPattern(
+  tree: NimNode, pattern: AbstractPattern
 ): bool {.compileTime.} =
-  tree.eqIdent(pattern)
-
-proc matchesConstructor(
-  tree: NimNode, pattern: string
-): bool {.compileTime.} =
-  ## `M[A, B]` matches pattern `"M"`
-  tree.kind == nnkBracketExpr and
+  ## Checks whether `tree` is an occurence of `pattern`
+  ##
+  ## Returns `true` if the patern matches, `false` otherwise.
+  ## Raises if the arity does not match!
+  if pattern.arity == 0:
+    # Concrete type - does not require brackets
+    tree.eqIdent($pattern.ident)
+  elif tree.kind == nnkBracketExpr and
     tree.len > 0 and
-    tree[0].eqIdent(pattern)
+    tree[0].eqIdent($pattern.ident):
+    # Constructor - check arity
+    let arity = tree.len - 1
+    if arity != pattern.arity:
+      let msg = "Wrong number of type arguments in expression " &
+        "(expected " & $pattern.arity & "):\L  " &
+        $toStrLit(tree)
+      error(msg)
+
+    true
+  else:
+    false
 
 proc instantiateConstructor(
-  member: TypeclassMember, param: string, tree: NimNode
+  concrete: ConcretePattern, abstract: AbstractPattern, tree: NimNode
 ): NimNode {.compileTime.} =
 
   proc replaceUnderscores(
@@ -100,17 +145,10 @@ proc instantiateConstructor(
 
   # we can have recursion in type arguments!
   for i in 0..<args.len:
-    var arg = args[i].copyNimTree
-    replaceInBody(arg, param, member)
-    args[i] = arg
+    let arg = args[i].copyNimTree
+    args[i] = arg.replaceInBody(abstract, concrete)
 
-  if args.len != member.arity:
-    let msg = "Expected " & $member.arity & "type arguments, " &
-      "got " & $args.len & "\L" &
-      "In expression:\L " & $toStrLit(tree)
-    error(msg)
-
-  (result, args) = replaceUnderscores(member.typeExpr, args)
+  (result, args) = replaceUnderscores(concrete.tree, args)
   doAssert: args.len == 0
 
 proc parseMemberParams(
@@ -130,6 +168,30 @@ proc parseMemberParams(
       result[i] = newIdentDefs(n[0], n[1])
     else:
       result[i] = newIdentDefs(n, newEmptyNode())
+
+proc parseAbstractPattern(
+  tree: NimNode
+): AbstractPattern =
+  ## Parses abstract pattern in forms `A` and `A[_,...]`
+  let wildcard = newIdentNode("_")
+  let isValid = tree.kind == nnkIdent or (
+    tree.kind == nnkBracketExpr and
+    tree.len > 1 and
+    tree[0].kind == nnkIdent and
+    (toSeq(tree.children))[1..tree.len-1].allIt(it == wildcard)
+  )
+
+  if not isValid:
+    echo treeRepr(tree)
+    error: "Illegal typeclass parameter expression: " & $toStrLit(tree)
+
+  if tree.kind == nnkBracketExpr:
+    AbstractPattern(
+      ident: tree[0].ident,
+      arity: tree.len - 1
+    )
+  else:
+    AbstractPattern(ident: tree.ident, arity: 0)
 
 proc replace(n: NimNode, subst: seq[(NimNode, NimNode)]): NimNode {.compileTime.} =
   transformDown(n) do (sub: NimNode) -> auto:
@@ -184,12 +246,15 @@ proc parseMember(
   )
 
   # Make sure parameters don't clash with existing ones
-  let (params, pattern) = genSymParams(params0, pattern0)
+  let (params, patternTree) = genSymParams(params0, pattern0)
+  let pattern = ConcretePattern(
+    tree: patternTree,
+    arity: getArity(patternTree)
+  )
 
   TypeclassMember(
     params: params,
-    typeExpr: pattern,
-    arity: getArity(pattern)
+    pattern: pattern
   )
 
 proc parseMemberOptions(
@@ -240,33 +305,34 @@ proc parseTypeclassOptions(
       error("Illegal typeclass option: " & $toStrLit(a))
 
 proc replaceInBody(
-  tree: var NimNode,
-  param: string,
-  member: TypeclassMember
-) =
+  tree: NimNode,
+  abstract: AbstractPattern,
+  concrete: ConcretePattern
+): NimNode =
   ## Replace occurrences of `param` in a tree
 
   proc worker(sub: NimNode): TransformTuple =
     # concrete classes don't support argument injection
-    let isConstructor = member.arity > 0
-    if isConstructor and sub.matchesConstructor(param):
-      mkTransformTuple(member.instantiateConstructor(param, sub), false)
-    elif sub.matchesConcrete(param):
-      # Member without parameters is injected as-is
-      mkTransformTuple(member.typeExpr.copyNimTree, false)
+    if sub.matchesPattern(abstract):
+      # TODO: to be refactored
+      let isConstructor = abstract.arity > 0
+      if isConstructor:
+        mkTransformTuple(concrete.instantiateConstructor(abstract, sub), false)
+      else:
+        # Members without parameters are injected without requiring brackets
+        mkTransformTuple(concrete.tree.copyNimTree, false)
     else:
       mkTransformTuple(sub.copyNimTree, true)
 
-  let n0 = transformDown(tree, worker)
-  tree = n0
+  transformDown(tree, worker)
 
 proc replaceInProcs(
   tree: NimNode,
-  param: string,
+  abstract: AbstractPattern,
   member: TypeclassMember
 ): NimNode {.compileTime.} =
   ## Traverse `tree` looking for top-level procs, and replace
-  ## `param` occurrences in each one with `member` instance.
+  ## `pattern` occurrences in each one with `member` instance.
 
   proc worker(sub: NimNode): TransformTuple =
     case sub.kind
@@ -286,17 +352,14 @@ proc replaceInProcs(
       res[2] = genParams
 
       # Replace in formal parameters
-      var formalParams = sub.params
-      replaceInBody(formalParams, param, member)
-      res.params = formalParams
+      let formalParams = sub.params
+      res.params = formalParams.replaceInBody(abstract, member.pattern)
 
       # Replace in proc body
-      var procBody = sub.body
-      replaceInBody(procBody, param, member)
-      res.body = procBody
+      let procBody = sub.body
+      res.body = procBody.replaceInBody(abstract, member.pattern)
 
-      # Do not recurse - we already replaced everything with
-      # replaceInBody
+      # Do not recurse - we already replaced everything with replaceInBody
       mkTransformTuple(res, false)
     else:
       mkTransformTuple(sub, true)
@@ -349,20 +412,26 @@ proc instanceImpl(
   member: TypeclassMember,
   options: MemberOptions
 ): NimNode {.compileTime.} =
+
+  if class.pattern.arity != member.pattern.arity:
+    let msg = "Type or constructor (" & $toStrLit(member.pattern.tree) &
+      ") does not match typeclass parameter (" &
+      $toStrLit(asTree(class.pattern)) & ")"
+    error(msg)
+
   result = class.body.copyNimTree
   result = result.removeSkippedProcs(options.skipping)
-  result = result.replaceInProcs(class.param, member)
+  result = result.replaceInProcs(class.pattern, member)
   result = result.addExportMarks(options.exporting)
 
 # A hack to allow passing `Typeclass` values from the macro to
 # defined variables
 var tc {.compiletime.} : Typeclass
 
-macro typeclass*(id, param: untyped, args: varargs[untyped]): typed =
+macro typeclass*(id, pattern: untyped, args: varargs[untyped]): typed =
   ## Define typeclass with name `id` and "signature" `param`.
   ##
   ## Warning: this creates a compile-time constant with name `id`.
-  param.expectKind(nnkIdent)
   id.expectKind(nnkIdent)
 
   # Typeclass body goes last, before it - various options
@@ -376,7 +445,7 @@ macro typeclass*(id, param: untyped, args: varargs[untyped]): typed =
 
   # Pass the value through `tc`.
   # I do not know of a cleaner way to do this.
-  tc = Typeclass(param: $param.ident, body: body)
+  tc = Typeclass(pattern: parseAbstractPattern(pattern), body: body)
   let tcSym = bindSym("tc")
   quote do:
     let `idTree` {.compileTime.} = `tcSym`

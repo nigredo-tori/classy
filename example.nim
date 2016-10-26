@@ -78,7 +78,7 @@ assert: mconcat(@[some("foo"), some("bar")]) == some("foobar")
 # we can't abstract over type constructors. Classy was created for this
 # exact use case:
 
-typeclass Functor, F:
+typeclass Functor, F[_]:
   # Again, can't forward-declare this.
   # proc fmap[A, B](fa: F[A], g: A -> B): F[B]
 
@@ -92,19 +92,12 @@ proc fmap[A, B](fa: Option[A], g: A -> B): Option[B] =
 # Notice that `Option` is not a type: it is a type **constructor**. All
 # occurrences of the form `F[X]` in the typeclass body will be replaced
 # with `Option[X]`.
-instance Functor, Option
+instance Functor, Option[_]
 
 assert: (some("foo") $> 123) == some(123)
 
-# `instance` macro also supports wildcards in member definition.
-# This code:
-#
-# .. code-block
-#
-#   instance Functor, Option[_]
-#
-# is equivalent to previous instance definition. All previously mentioned
-# features still work, so you can, for example, write something like this:
+# All previously mentioned features still work, so you can, for
+# example, write something like this:
 #
 # .. code-block
 #
