@@ -1,5 +1,5 @@
 import macros, future
-from sequtils import toSeq, applyIt, allIt
+from sequtils import apply, toSeq, applyIt, allIt
 
 type
   AbstractPattern = object
@@ -128,7 +128,8 @@ proc matchesPattern(
     false
 
 proc instantiateConstructor(
-  concrete: ConcretePattern, abstract: AbstractPattern, tree: NimNode
+  concrete: ConcretePattern, abstract: AbstractPattern, tree: NimNode,
+  processParam: NimNode -> NimNode
 ): NimNode {.compileTime.} =
 
   proc replaceUnderscores(
@@ -153,12 +154,20 @@ proc instantiateConstructor(
   args.delete(0)
 
   # we can have recursion in type arguments!
-  for i in 0..<args.len:
-    let arg = args[i].copyNimTree
-    args[i] = arg.replaceInBody(abstract, concrete)
+  args.apply(processParam)
 
   (result, args) = replaceUnderscores(concrete.tree, args)
   doAssert: args.len == 0
+
+proc instantiate(
+  concrete: ConcretePattern, abstract: AbstractPattern, tree: NimNode,
+  processParam: NimNode -> NimNode
+): NimNode {.compileTime.} =
+  if abstract.arity > 0:
+    concrete.instantiateConstructor(abstract, tree, processParam)
+  else:
+    # Members without parameters do not have brackets
+    concrete.tree.copyNimTree
 
 proc parseMemberParams(
   tree: NimNode
@@ -320,15 +329,12 @@ proc replaceInBody(
   ## Replace occurrences of `param` in a tree
 
   proc worker(sub: NimNode): TransformTuple =
-    # concrete classes don't support argument injection
     if sub.matchesPattern(abstract):
-      # TODO: to be refactored
-      let isConstructor = abstract.arity > 0
-      if isConstructor:
-        mkTransformTuple(concrete.instantiateConstructor(abstract, sub), false)
-      else:
-        # Members without parameters are injected without requiring brackets
-        mkTransformTuple(concrete.tree.copyNimTree, false)
+      let newSub = concrete.instantiate(
+        abstract, sub,
+        processParam = ((n: NimNode) => n.replaceInBody(abstract, concrete))
+      )
+      mkTransformTuple(newSub, false)
     else:
       mkTransformTuple(sub.copyNimTree, true)
 
