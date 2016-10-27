@@ -53,6 +53,9 @@ type
 proc mkTransformTuple(newNode: NimNode, recurse: bool): auto =
   TransformTuple(newNode: newNode, recurse: recurse)
 
+template fail(msg: string, n: NimNode = nil) =
+  error(msg & ": " & $toStrLit(n), n)
+
 proc replaceInBody(
   tree: NimNode,
   abstract: AbstractPattern,
@@ -110,9 +113,8 @@ proc matchesPattern(
     let arity = tree.len - 1
     if arity != pattern.arity:
       let msg = "Wrong number of type arguments in expression " &
-        "(expected " & $pattern.arity & "):\L  " &
-        $toStrLit(tree)
-      error(msg)
+        "(expected " & $pattern.arity & ")"
+      fail(msg, tree)
 
     true
   else:
@@ -182,8 +184,7 @@ proc parseAbstractPattern(
   )
 
   if not isValid:
-    echo treeRepr(tree)
-    error: "Illegal typeclass parameter expression: " & $toStrLit(tree)
+    fail("Illegal typeclass parameter expression", tree)
 
   if tree.kind == nnkBracketExpr:
     AbstractPattern(
@@ -277,13 +278,13 @@ proc parseMemberOptions(
 
     if a.kind == nnkCall and a[0].eqIdent("exporting"):
       if result.exporting.kind != eoNone:
-        error("Duplicate exporting clause: " & $toStrLit(a))
+        fail("Duplicate exporting clause", a)
       var acc = newSeq[NimNode]()
       for i in 1..<a.len:
         a[i].expectKind({nnkIdent, nnkAccQuoted})
         if a[i].eqIdent("_") and a.len > 2:
           # Can't mix wildcard with other exporting
-          error("Invalid exporting clause: " & $toStrLit(a))
+          fail("Invalid exporting clause", a)
         acc.add(a[i])
 
       if acc.len == 1 and acc[0].eqIdent("_"):
@@ -298,11 +299,11 @@ proc parseTypeclassOptions(
   for a in args:
     if a.eqIdent("exported"):
       if result.exported:
-        error("Duplicate exported clause")
+        fail("Duplicate exported clause", a)
       else:
         result.exported = true
     else:
-      error("Illegal typeclass option: " & $toStrLit(a))
+      fail("Illegal typeclass option: ", a)
 
 proc replaceInBody(
   tree: NimNode,
@@ -414,10 +415,9 @@ proc instanceImpl(
 ): NimNode {.compileTime.} =
 
   if class.pattern.arity != member.pattern.arity:
-    let msg = "Type or constructor (" & $toStrLit(member.pattern.tree) &
-      ") does not match typeclass parameter (" &
+    let msg = "Type or constructor does not match typeclass parameter (" &
       $toStrLit(asTree(class.pattern)) & ")"
-    error(msg)
+    fail(msg, member.pattern.tree)
 
   result = class.body.copyNimTree
   result = result.removeSkippedProcs(options.skipping)
@@ -437,7 +437,7 @@ macro typeclass*(id, pattern: untyped, args: varargs[untyped]): typed =
   # Typeclass body goes last, before it - various options
   let argsSeq = toSeq(args)
   if argsSeq.len == 0:
-    error("Missing body for typeclass " & $toStrLit(id))
+    fail("Missing body for typeclass" & $id)
   let options = parseTypeclassOptions(argsSeq[0..^2])
   let body = argsSeq[argsSeq.len - 1]
 
