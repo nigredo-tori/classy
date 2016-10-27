@@ -133,7 +133,7 @@ proc instantiateConstructor(
     let treeNew = transformDown(tree) do (sub: NimNode) -> auto:
       if sub.eqIdent("_"):
         let res = argsNew[0].copyNimTree
-        argsNew.del(0)
+        argsNew.delete(0)
         mkTransformTuple(res, false)
       else:
         mkTransformTuple(sub, true)
@@ -143,7 +143,7 @@ proc instantiateConstructor(
   tree.expectKind(nnkBracketExpr)
   # First one is the constructor itself
   var args = toSeq(tree.children)
-  args.del(0)
+  args.delete(0)
 
   # we can have recursion in type arguments!
   for i in 0..<args.len:

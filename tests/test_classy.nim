@@ -92,6 +92,25 @@ suite "Typeclasses":
       instance Monad, N => (N, string, _)
       check: join((1, "foo", (2, "bar", 0.5))) == (3, "foobar", 0.5)
 
+  test "Bifunctor":
+    shouldWork:
+      # Should allow multi-parameter patterns
+      typeclass Bifunctor, F[_, _]:
+        # proc bimap[A, B, C, D](f: F[A, B], g: A -> C, h: B -> D): F[C, D]
+        proc first[A, B, C](f: F[A, B], g: A -> C): F[C, B] =
+          f.bimap(g, (b: B) => b)
+        proc second[A, B, C](f: F[A, B], h: B -> C): F[A, C] =
+          f.bimap((a: A) => a, h)
+
+      proc bimap[A, B, C, D](f: (A, B), g: A -> C, h: B -> D): (C, D) =
+        (g(f[0]), h(f[1]))
+
+      instance Bifunctor, (_, _)
+      let t = (0.5.float, '2')
+        .first(x => $x)
+        .second(y => ord(y).int - ord('0'))
+      check: t == ("0.5", 2)
+
 suite "Specific features":
   test "Skipping definitions":
     shouldWork:
