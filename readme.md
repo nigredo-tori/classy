@@ -3,6 +3,8 @@
 [![Software License][ico-license]](license.md)
 ![Stability][ico-stability]
 
+[![nimble](https://raw.githubusercontent.com/yglukhov/nimble-tag/master/nimble_js.png)](https://github.com/yglukhov/nimble-tag)
+
 Haskell-style typeclasses for Nim.
 
 Allows to instantiate collections of functions for a given type or type constructor.
