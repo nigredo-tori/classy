@@ -6,6 +6,9 @@ template shouldWork(body: untyped): untyped =
   else:
     check: compiles(body)
 
+template shouldFail(body: untyped): untyped =
+  check: not compiles(body)
+
 suite "Typeclasses":
   test "Monoid":
     shouldWork:
@@ -151,3 +154,9 @@ suite "Specific features":
 
       instance Some, A => Option[A]
       assert: foo(123, some("foo")) == "123,Some(foo)"
+
+  test "Should fail for constructor without arguments in body":
+    shouldFail:
+      typeclass Bad, B[_]:
+        proc foo(x: B) = discard
+      instance Bad, seq[_]

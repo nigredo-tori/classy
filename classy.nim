@@ -103,9 +103,16 @@ proc matchesPattern(
   ##
   ## Returns `true` if the patern matches, `false` otherwise.
   ## Raises if the arity does not match!
-  if pattern.arity == 0:
+  if tree.eqIdent($pattern.ident):
+
+    # TODO: This should happen at instantiation!
+    # We should not allow invalid class body.
+    if pattern.arity > 0:
+      fail("Constructor pattern cannot be used without arguments", tree)
+
     # Concrete type - does not require brackets
-    tree.eqIdent($pattern.ident)
+    true
+
   elif tree.kind == nnkBracketExpr and
     tree.len > 0 and
     tree[0].eqIdent($pattern.ident):
