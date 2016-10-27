@@ -7,7 +7,8 @@ template shouldWork(body: untyped): untyped =
     check: compiles(body)
 
 template shouldFail(body: untyped): untyped =
-  check: not compiles(body)
+  block:
+    check: not compiles(body)
 
 suite "Typeclasses":
   test "Monoid":
@@ -114,7 +115,44 @@ suite "Typeclasses":
         .second(y => ord(y).int - ord('0'))
       check: t == ("0.5", 2)
 
-suite "Specific features":
+suite "Multi-parameter typeclasses":
+  test "Should support multi-parameter typeclasses":
+    shouldWork:
+      typeclass Conversion, [A, B]:
+        #proc to(a: A, tb: typedesc[B]): B
+        proc mapTo(sa: seq[A], tb: typedesc[B]): seq[B] =
+          sa.map(a => a.to(B))
+
+      proc to(x: int, tb: typedesc[string]): string = $x
+      instance Conversion, [int, string]
+      check: @[1, 2, 3].mapTo(string) == @["1", "2", "3"]
+
+  test "Should check typeclass arity when instantiating":
+    shouldWork:
+      # Also checks few related features
+      typeclass NoArgs, []: discard
+      shouldWork: instance NoArgs, []
+      shouldFail: instance NoArgs, int
+      shouldFail: instance NoArgs, [int]
+
+      typeclass OneArg1, A: discard
+      shouldFail: instance OneArg1, []
+      shouldWork: instance OneArg1, int
+      shouldWork: instance OneArg1, [int]
+      shouldFail: instance OneArg1, [int, string]
+
+      typeclass OneArg2, [A]: discard
+      shouldFail: instance OneArg2, []
+      shouldWork: instance OneArg2, int
+      shouldWork: instance OneArg2, [int]
+      shouldFail: instance OneArg2, [int, string]
+
+      typeclass TwoArgs, [A, B]: discard
+      shouldFail: instance TwoArgs, int
+      shouldWork: instance TwoArgs, [int, string]
+      shouldFail: instance TwoArgs, [int, string, float]
+
+suite "Miscellaneous features":
   test "Skipping definitions":
     shouldWork:
       typeclass Some, S:

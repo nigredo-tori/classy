@@ -1,5 +1,5 @@
 import macros, future
-from sequtils import apply, toSeq, applyIt, allIt
+from sequtils import apply, map, zip, toSeq, applyIt, allIt, mapIt
 
 type
   AbstractPattern = object
@@ -23,11 +23,14 @@ type
     arity: Natural
 
   Typeclass = object
-    pattern: AbstractPattern
+    # Only here for better error messaging.
+    # Do not use for membership checks and such!
+    name: string
+    patterns: seq[AbstractPattern]
     body: NimNode
 
   TypeclassMember = object
-    pattern: ConcretePattern
+    patterns: seq[ConcretePattern]
     params: seq[NimNode]
 
   ExportOptionsKind = enum eoNone, eoSome, eoAll
@@ -54,12 +57,18 @@ proc mkTransformTuple(newNode: NimNode, recurse: bool): auto =
   TransformTuple(newNode: newNode, recurse: recurse)
 
 template fail(msg: string, n: NimNode = nil) =
-  error(msg & ": " & $toStrLit(n), n)
+  let errMsg = if n != nil: msg & ": " & $toStrLit(n) else: msg
+  error(errMsg, n)
+
+proc arity(x: Typeclass): Natural {.compileTime.} =
+  x.patterns.len
+
+proc arity(x: TypeclassMember): Natural {.compileTime.} =
+  x.patterns.len
 
 proc replaceInBody(
   tree: NimNode,
-  abstract: AbstractPattern,
-  concrete: ConcretePattern
+  substs: seq[(AbstractPattern, ConcretePattern)]
 ): NimNode {.compileTime.}
 
 proc transformDown(
@@ -189,7 +198,7 @@ proc parseMemberParams(
 
 proc parseAbstractPattern(
   tree: NimNode
-): AbstractPattern =
+): AbstractPattern {.compileTime.}  =
   ## Parses abstract pattern in forms `A` and `A[_,...]`
   let wildcard = newIdentNode("_")
   let isValid = tree.kind == nnkIdent or (
@@ -209,6 +218,17 @@ proc parseAbstractPattern(
     )
   else:
     AbstractPattern(ident: tree.ident, arity: 0)
+
+proc parseAbstractPatterns(
+  tree: NimNode
+): seq[AbstractPattern] {.compileTime.} =
+  let patternNodes = (block:
+    if tree.kind == nnkBracket:
+      toSeq(tree.children)
+    else:
+      @[tree]
+  )
+  patternNodes.map(parseAbstractPattern)
 
 proc replace(n: NimNode, subst: seq[(NimNode, NimNode)]): NimNode {.compileTime.} =
   transformDown(n) do (sub: NimNode) -> auto:
@@ -249,11 +269,12 @@ proc genSymParams(
 proc parseMember(
   tree: NimNode
 ): TypeclassMember {.compileTime.} =
-  ## Parse typeclass member pattern in one of following forms:
-  ## - `(A: T1, B..) => Expr[A, _, ...]`
-  ## - `A => Expr[A, _, ...]`
-  ## - `Expr[_, ...]`
-  ## - `Expr`
+  ## Parse typeclass member patterns in one of following forms:
+  ## - `(A: T1, B..) => [Constr[A, _, ...], Concrete, ...]`
+  ## - `(A: T1, B..) => Constr[A, _, ...]`
+  ## - `A => Constr[A, _, ...]`
+  ## - `Constr[_, ...]`
+  ## - `Concrete`
   let hasParams = tree.kind == nnkInfix and tree[0].eqIdent("=>")
   let (params0, pattern0) = (block:
     if hasParams:
@@ -262,16 +283,23 @@ proc parseMember(
       (@[], tree)
   )
 
-  # Make sure parameters don't clash with existing ones
-  let (params, patternTree) = genSymParams(params0, pattern0)
-  let pattern = ConcretePattern(
-    tree: patternTree,
-    arity: getArity(patternTree)
+  # Make sure parameters don't clash with anything in body
+  let (params, patternsTree) = genSymParams(params0, pattern0)
+
+  # Strip possible brackets around patterns
+  let patternNodes = (block:
+    if patternsTree.kind == nnkBracket:
+      toSeq(patternsTree.children)
+    else:
+      @[patternsTree]
+  )
+  let patterns = patternNodes.map(n =>
+    ConcretePattern(tree: n, arity: getArity(n))
   )
 
   TypeclassMember(
     params: params,
-    pattern: pattern
+    patterns: patterns
   )
 
 proc parseMemberOptions(
@@ -323,30 +351,31 @@ proc parseTypeclassOptions(
 
 proc replaceInBody(
   tree: NimNode,
-  abstract: AbstractPattern,
-  concrete: ConcretePattern
+  substs: seq[(AbstractPattern, ConcretePattern)]
 ): NimNode =
-  ## Replace occurrences of `param` in a tree
+  ## Replace `substs` in a tree
 
   proc worker(sub: NimNode): TransformTuple =
-    if sub.matchesPattern(abstract):
-      let newSub = concrete.instantiate(
-        abstract, sub,
-        processParam = ((n: NimNode) => n.replaceInBody(abstract, concrete))
-      )
-      mkTransformTuple(newSub, false)
-    else:
-      mkTransformTuple(sub.copyNimTree, true)
+    for subst in substs:
+      let (abstract, concrete) = subst
+      if sub.matchesPattern(abstract):
+        let newSub = concrete.instantiate(
+          abstract, sub,
+          processParam = ((n: NimNode) => n.replaceInBody(substs))
+        )
+        return mkTransformTuple(newSub, false)
+
+    return mkTransformTuple(sub.copyNimTree, true)
 
   transformDown(tree, worker)
 
 proc replaceInProcs(
   tree: NimNode,
-  abstract: AbstractPattern,
-  member: TypeclassMember
+  params: seq[NimNode],
+  substs: seq[(AbstractPattern, ConcretePattern)]
 ): NimNode {.compileTime.} =
-  ## Traverse `tree` looking for top-level procs, and replace
-  ## `pattern` occurrences in each one with `member` instance.
+  ## Traverse `tree` looking for top-level procs; inject `params` and
+  ## replace `substs` in each one.
 
   proc worker(sub: NimNode): TransformTuple =
     case sub.kind
@@ -357,21 +386,21 @@ proc replaceInProcs(
 
       var genParams = sub[2]
       expectKind(genParams, {nnkEmpty, nnkGenericParams})
-      if genParams.kind == nnkEmpty and member.params.len > 0:
+      if genParams.kind == nnkEmpty and params.len > 0:
         genParams = newNimNode(nnkGenericParams)
 
-      for p in member.params:
+      for p in params:
         genParams.add(p.copyNimTree)
 
       res[2] = genParams
 
       # Replace in formal parameters
       let formalParams = sub.params
-      res.params = formalParams.replaceInBody(abstract, member.pattern)
+      res.params = formalParams.replaceInBody(substs)
 
       # Replace in proc body
       let procBody = sub.body
-      res.body = procBody.replaceInBody(abstract, member.pattern)
+      res.body = procBody.replaceInBody(substs)
 
       # Do not recurse - we already replaced everything with replaceInBody
       mkTransformTuple(res, false)
@@ -427,21 +456,30 @@ proc instanceImpl(
   options: MemberOptions
 ): NimNode {.compileTime.} =
 
-  if class.pattern.arity != member.pattern.arity:
-    let msg = "Type or constructor does not match typeclass parameter (" &
-      $toStrLit(asTree(class.pattern)) & ")"
-    fail(msg, member.pattern.tree)
+  if class.arity != member.arity:
+    let msg = "Incorrect number of arguments for typeclass " & class.name
+    fail(msg)
+
+  let substs: seq[(AbstractPattern, ConcretePattern)] =
+    class.patterns.zip(member.patterns)
+
+  for s in substs:
+    let (abstract, concrete) = s
+    if abstract.arity != concrete.arity:
+      let msg = "Type or constructor does not match typeclass parameter (" &
+        $toStrLit(asTree(abstract)) & ")"
+      fail(msg, concrete.tree)
 
   result = class.body.copyNimTree
   result = result.removeSkippedProcs(options.skipping)
-  result = result.replaceInProcs(class.pattern, member)
+  result = result.replaceInProcs(member.params, substs)
   result = result.addExportMarks(options.exporting)
 
 # A hack to allow passing `Typeclass` values from the macro to
 # defined variables
 var tc {.compiletime.} : Typeclass
 
-macro typeclass*(id, pattern: untyped, args: varargs[untyped]): typed =
+macro typeclass*(id, patternsTree: untyped, args: varargs[untyped]): typed =
   ## Define typeclass with name `id` and "signature" `param`.
   ##
   ## Warning: this creates a compile-time constant with name `id`.
@@ -453,25 +491,31 @@ macro typeclass*(id, pattern: untyped, args: varargs[untyped]): typed =
     fail("Missing body for typeclass" & $id)
   let options = parseTypeclassOptions(argsSeq[0..^2])
   let body = argsSeq[argsSeq.len - 1]
+  let patterns = parseAbstractPatterns(patternsTree)
 
   let idTree = if options.exported: id.postfix("*") else: id
 
   # Pass the value through `tc`.
   # I do not know of a cleaner way to do this.
-  tc = Typeclass(pattern: parseAbstractPattern(pattern), body: body)
+  tc = Typeclass(
+    name: $id,
+    patterns: patterns,
+    body: body
+  )
   let tcSym = bindSym("tc")
   quote do:
     let `idTree` {.compileTime.} = `tcSym`
 
 macro instance*(
   class: static[Typeclass],
-  arg: untyped,
+  argsTree: untyped,
   options: varargs[untyped]
 ): untyped =
   var opts = newSeq[NimNode]()
   for o in options: opts.add(o)
 
-  result = instanceImpl(class, parseMember(arg), parseMemberOptions(opts))
+  result = instanceImpl(class, parseMember(argsTree), parseMemberOptions(opts))
+
   # For debugging purposes
   when defined(classyDumpCode):
     echo toStrLit(result)
