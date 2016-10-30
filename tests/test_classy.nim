@@ -198,3 +198,11 @@ suite "Miscellaneous features":
       typeclass Bad, B[_]:
         proc foo(x: B) = discard
       instance Bad, seq[_]
+
+  test "Should properly inject outside proc definitions":
+    shouldWork:
+      typeclass Foo, F:
+        let fooVal: F = 0
+
+      instance Foo, int
+      assert: fooVal == 0

@@ -349,12 +349,8 @@ proc parseTypeclassOptions(
     else:
       fail("Illegal typeclass option: ", a)
 
-proc replaceInBody(
-  tree: NimNode,
-  substs: seq[(AbstractPattern, ConcretePattern)]
-): NimNode =
-  ## Replace `substs` in a tree
-
+# Global for reuse in `replaceInProcs`
+proc mkBodyWorker(substs: seq[(AbstractPattern, ConcretePattern)]): auto =
   proc worker(sub: NimNode): TransformTuple =
     for subst in substs:
       let (abstract, concrete) = subst
@@ -367,7 +363,14 @@ proc replaceInBody(
 
     return mkTransformTuple(sub.copyNimTree, true)
 
-  transformDown(tree, worker)
+  worker
+
+proc replaceInBody(
+  tree: NimNode,
+  substs: seq[(AbstractPattern, ConcretePattern)]
+): NimNode =
+  ## Replace `substs` in a tree
+  transformDown(tree, mkBodyWorker(substs))
 
 proc replaceInProcs(
   tree: NimNode,
@@ -376,6 +379,11 @@ proc replaceInProcs(
 ): NimNode {.compileTime.} =
   ## Traverse `tree` looking for top-level procs; inject `params` and
   ## replace `substs` in each one.
+  ## Otherwise behaves the same as `ReplaceInBody` - replaces abstract
+  ## patterns if encountered.
+
+  # Fallback worker function
+  let bodyWorker = mkBodyWorker(substs)
 
   proc worker(sub: NimNode): TransformTuple =
     case sub.kind
@@ -402,10 +410,13 @@ proc replaceInProcs(
       let procBody = sub.body
       res.body = procBody.replaceInBody(substs)
 
-      # Do not recurse - we already replaced everything with replaceInBody
+      # Do not recurse - we already replaced everything using `replaceInBody`
       mkTransformTuple(res, false)
     else:
-      mkTransformTuple(sub, true)
+      # Notice that arguments of a replaced constructor are handled by
+      # `bodyWorker`, meaning any proc defs inside them don't get parameter
+      # injection. This is probably the right thing to do, though.
+      bodyWorker(sub)
 
   transformDown(tree, worker)
 

@@ -139,7 +139,7 @@ typeclass TraverseSeqWith, F[_]:
     for a in ta:
       result = pure(F[type(worker)], worker) <*> result <*> f(a)
 
-  instance TraversableInst, [seq[_], Option[_]]
+  instance TraversableInst, [seq[_], F[_]]
 
 # Now we only have to duplicate this line to support a new functor.
 instance TraverseSeqWith, Option[_]
