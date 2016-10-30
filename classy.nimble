@@ -18,3 +18,7 @@ installFiles = @["classy.nim"]
 task tests, "Run tests":
   --run
   setCommand "c", "tests/test_classy.nim"
+
+task example, "Run example":
+  --run
+  setCommand "c", "example.nim"
