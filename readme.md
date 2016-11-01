@@ -30,7 +30,9 @@ assert: (@[1, 2, 3] $> "a") == @["a", "a", "a"]
 ```
 ## Documentation
 
-Upcoming. For the moment please refer to [example](example.nim) for more in-depth explanation.
+Module documentation is located [here](https://nigredo-tori.github.io/classy/head/classy.html).
+
+Also refer to [example](example.nim) for a quick tutorial.
 
 ## Testing
 
