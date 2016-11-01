@@ -1,11 +1,66 @@
 import macros, future
 from sequtils import apply, map, zip, toSeq, applyIt, allIt, mapIt
 
+## Classy
+## ======
+##
+## Provides ability to define and instantiate haskell-like typeclasses in Nim.
+##
+## Overview
+## --------
+##
+## This module consists of two macros. ``typeclass`` saves a parameterized AST to
+## serve as a template (in an object of type ``Typeclass``). ``instance`` performs
+## necessary substitutions in saved AST for provided arguments, and executes
+## the resulting code.
+##
+## As an example, let's say we want to define a ``Functor`` typeclass:
+##
+## .. code-block:: nim
+##   typeclass Functor, F[_]:
+##     # proc fmap[A, B](fa: F[A], g: A -> B): F[B]
+##     proc `$>`[A, B](fa: F[A], b: B): F[B]=
+##       fmap(fa, (a: A) => b)
+##
+## This code does not declare any procs - only a compile-time variable ``Functor``.
+## Notice that our code abstracts over type constructor - ``F`` is just a
+## placeholder.
+##
+## Notice that we ``fmap`` is not part of the typeclass. At the moment forward
+## declarations don't work for generic procs in Nim. As we'll see, even if
+## proc AST in our typeclass has no generic parameters, the generated proc
+## can have some. So it is recommended to not define unimplemented procs
+## inside typeclasses. This will probably change after this issue is closed:
+## https://github.com/nim-lang/Nim/issues/4104.
+##
+## Now let's instantiate our typeclass. For example, let's define a ``Functor``
+## instance for all tuples of two elements, where the left value is ``SomeInteger``:
+##
+## .. code-block:: nim
+##
+##   instance Functor, (C: SomeInteger) => (C, _)
+##
+## This generates the following proc definition:
+##
+## .. code-block:: nim
+##
+##   proc `$>`[A, B, C: SomeInteger](fa: (C, A), b: B): (C, B)=
+##       fmap(fa, (a: A) => b)
+##
+## Here are the few things to notice:
+##
+## 1. All ocurrences of form ``F[X]`` were replaced with ``(C, X)``
+## 2. ``C``, the parameter of our instance, became the parameter of the generated
+##    definition, with its constraint preserved.
+## 3. We're referring to a proc ``fmap``. So any procs, that are assumed to be
+##    present in typeclass body, should be defined with corresponding types
+##    before the typeclass is instantiated
+
 type
   AbstractPattern = object
     ## Type/pattern placeholder for typeclass declaration.
     ##
-    ## Has either form `A` (placeholder for a concrete type) or `A[_,...]` (for
+    ## Has either form ``A`` (placeholder for a concrete type) or ``A[_,...]`` (for
     ## a type constructor).
     ## Doesn't have to evaluate to concrete type after parameter substitution -
     ## must be eliminated after typeclass instantiation.
@@ -22,7 +77,7 @@ type
     tree: NimNode
     arity: Natural
 
-  Typeclass = object
+  Typeclass* = object
     # Only here for better error messaging.
     # Do not use for membership checks and such!
     name: string
@@ -97,7 +152,7 @@ proc asTree(p: AbstractPattern): NimNode {.compileTime.} =
       result.add(newIdentNode("_"))
 
 proc getArity(tree: NimNode): int {.compileTime.} =
-  ## Counts all underscore idents in `tree`
+  ## Counts all underscore idents in ``tree``
   if tree.eqIdent("_"):
     result = 1
   else:
@@ -108,9 +163,9 @@ proc getArity(tree: NimNode): int {.compileTime.} =
 proc matchesPattern(
   tree: NimNode, pattern: AbstractPattern
 ): bool {.compileTime.} =
-  ## Checks whether `tree` is an occurence of `pattern`
+  ## Checks whether ``tree`` is an occurence of ``pattern``
   ##
-  ## Returns `true` if the patern matches, `false` otherwise.
+  ## Returns ``true`` if the patern matches, ``false`` otherwise.
   ## Raises if the arity does not match!
   if tree.eqIdent($pattern.ident):
 
@@ -145,8 +200,8 @@ proc instantiateConstructor(
     tree: NimNode, args: seq[NimNode]
   ): (NimNode, seq[NimNode]) =
     var argsNew = args
-    # Traverse `tree` and replace all underscore identifiers
-    # with nodes from `args` in order.
+    # Traverse ``tree`` and replace all underscore identifiers
+    # with nodes from ``args`` in order.
     let treeNew = transformDown(tree) do (sub: NimNode) -> auto:
       if sub.eqIdent("_"):
         let res = argsNew[0].copyNimTree
@@ -182,7 +237,7 @@ proc parseMemberParams(
   tree: NimNode
 ): seq[NimNode] =
   ## parse instance parameters in following forms:
-  ## `A`, `(A, B)`, `(A: T1, B)` etc.
+  ## ``A``, ``(A, B)``, ``(A: T1, B)`` etc.
 
   if tree.kind == nnkPar:
     result = toSeq(tree.children)
@@ -199,7 +254,7 @@ proc parseMemberParams(
 proc parseAbstractPattern(
   tree: NimNode
 ): AbstractPattern {.compileTime.}  =
-  ## Parses abstract pattern in forms `A` and `A[_,...]`
+  ## Parses abstract pattern in forms ``A`` and ``A[_,...]``
   let wildcard = newIdentNode("_")
   let isValid = tree.kind == nnkIdent or (
     tree.kind == nnkBracketExpr and
@@ -270,11 +325,11 @@ proc parseMember(
   tree: NimNode
 ): TypeclassMember {.compileTime.} =
   ## Parse typeclass member patterns in one of following forms:
-  ## - `(A: T1, B..) => [Constr[A, _, ...], Concrete, ...]`
-  ## - `(A: T1, B..) => Constr[A, _, ...]`
-  ## - `A => Constr[A, _, ...]`
-  ## - `Constr[_, ...]`
-  ## - `Concrete`
+  ## - ``(A: T1, B..) => [Constr[A, _, ...], Concrete, ...]``
+  ## - ``(A: T1, B..) => Constr[A, _, ...]``
+  ## - ``A => Constr[A, _, ...]``
+  ## - ``Constr[_, ...]``
+  ## - ``Concrete``
   let hasParams = tree.kind == nnkInfix and tree[0].eqIdent("=>")
   let (params0, pattern0) = (block:
     if hasParams:
@@ -306,8 +361,10 @@ proc parseMemberOptions(
   args: seq[NimNode]
 ): MemberOptions =
   ## Parse following instance options:
-  ## - `skipping(foo)` - skips `foo` definition
-  ## - `skipping(foo, bar)` - skips `foo` and `bar`
+  ## - ``skipping(foo)`` - skips ``foo`` definition
+  ## - ``skipping(foo, bar)`` - skips ``foo`` and ``bar``
+  ## - ``exporting(_)`` - export all symbols
+  ## - ``exporting(foo, bar)`` - export ``foo`` and ``bar``
 
   result = MemberOptions(
     skipping: newSeq[NimNode](),
@@ -349,7 +406,7 @@ proc parseTypeclassOptions(
     else:
       fail("Illegal typeclass option: ", a)
 
-# Global for reuse in `replaceInProcs`
+# Global for reuse in ``replaceInProcs``
 proc mkBodyWorker(substs: seq[(AbstractPattern, ConcretePattern)]): auto =
   proc worker(sub: NimNode): TransformTuple =
     for subst in substs:
@@ -369,7 +426,7 @@ proc replaceInBody(
   tree: NimNode,
   substs: seq[(AbstractPattern, ConcretePattern)]
 ): NimNode =
-  ## Replace `substs` in a tree
+  ## Replace ``substs`` in a tree
   transformDown(tree, mkBodyWorker(substs))
 
 proc replaceInProcs(
@@ -377,9 +434,9 @@ proc replaceInProcs(
   params: seq[NimNode],
   substs: seq[(AbstractPattern, ConcretePattern)]
 ): NimNode {.compileTime.} =
-  ## Traverse `tree` looking for top-level procs; inject `params` and
-  ## replace `substs` in each one.
-  ## Otherwise behaves the same as `ReplaceInBody` - replaces abstract
+  ## Traverse ``tree`` looking for top-level procs; inject ``params`` and
+  ## replace ``substs`` in each one.
+  ## Otherwise behaves the same as ``ReplaceInBody`` - replaces abstract
   ## patterns if encountered.
 
   # Fallback worker function
@@ -410,11 +467,11 @@ proc replaceInProcs(
       let procBody = sub.body
       res.body = procBody.replaceInBody(substs)
 
-      # Do not recurse - we already replaced everything using `replaceInBody`
+      # Do not recurse - we already replaced everything using ``replaceInBody``
       mkTransformTuple(res, false)
     else:
       # Notice that arguments of a replaced constructor are handled by
-      # `bodyWorker`, meaning any proc defs inside them don't get parameter
+      # ``bodyWorker``, meaning any proc defs inside them don't get parameter
       # injection. This is probably the right thing to do, though.
       bodyWorker(sub)
 
@@ -424,8 +481,8 @@ proc removeSkippedProcs(
   tree: NimNode,
   skipping: seq[NimNode]
 ): NimNode {.compileTime.} =
-  ## Traverse `tree` looking for top-level procs with names
-  ## in `skipping` and remove their definitions.
+  ## Traverse ``tree`` looking for top-level procs with names
+  ## in ``skipping`` and remove their definitions.
 
   proc worker(sub: NimNode): TransformTuple =
     case sub.kind
@@ -486,14 +543,31 @@ proc instanceImpl(
   result = result.replaceInProcs(member.params, substs)
   result = result.addExportMarks(options.exporting)
 
-# A hack to allow passing `Typeclass` values from the macro to
+# A hack to allow passing ``Typeclass`` values from the macro to
 # defined variables
 var tc {.compiletime.} : Typeclass
 
 macro typeclass*(id, patternsTree: untyped, args: varargs[untyped]): typed =
-  ## Define typeclass with name `id` and "signature" `param`.
+  ## Define typeclass with name ``id``.
   ##
-  ## Warning: this creates a compile-time constant with name `id`.
+  ## This creates a compile-time variable with name ``id``.
+  ##
+  ## Call syntax:
+  ##
+  ## .. code-block:: nim
+  ##
+  ##   typeclass Class, [A[_, ..], B,...], exported:
+  ##     <typeclass body>
+  ##
+  ## Typeclass can have zero or more parameters, each of which can be a type
+  ## constructor with arity 1 and higher (like ``A`` in sample above), or be
+  ## a concrete type (like ``B``). If a typeclass has exactly one parameter,
+  ## the brackets around parameter list can be omitted.
+  ##
+  ## The ``exported`` option allows to export the typeclass from module.
+  ## This marks corresponding variable with export postfix. Notice that in
+  ## this case standard restrictions apply: the ``typeclass`` call should be
+  ## in module's top scope.
   id.expectKind(nnkIdent)
 
   # Typeclass body goes last, before it - various options
@@ -506,7 +580,7 @@ macro typeclass*(id, patternsTree: untyped, args: varargs[untyped]): typed =
 
   let idTree = if options.exported: id.postfix("*") else: id
 
-  # Pass the value through `tc`.
+  # Pass the value through ``tc``.
   # I do not know of a cleaner way to do this.
   tc = Typeclass(
     name: $id,
@@ -522,6 +596,54 @@ macro instance*(
   argsTree: untyped,
   options: varargs[untyped]
 ): untyped =
+  ## Instantiate typeclass ``class`` with given arguments
+  ##
+  ## Call syntax:
+  ##
+  ## .. code-block:: nim
+  ##
+  ##   instance Class, (K, L) => [AType[_, K,..], BType,...],
+  ##     skipping(foo, bar),
+  ##     exporting(_)
+  ##
+  ## ``instance`` does the following:
+  ## 1. Replaces each of parameter forms in `typeclass` definition with
+  ##    corresponding argument form (like ``AType`` in code example). Parameter
+  ##    form list of ``typeclass`` and argument form lists of corresponding
+  ##    `instance` calls must have matching length, and corresponding forms
+  ##    should have the same arity.
+  ## 2. Injects instance parameters (``K`` in the example) into top-level
+  ##    routines in typeclass body.
+  ## 3. Transforms the body according to options.
+  ## 4. Executes the body.
+  ##
+  ## Instance `parameters` can have constraints in the same form as in a generic
+  ## definition. If no instance parameters are present, the corresponding list
+  ## can be omitted. If exactly one instance parameter is present (without
+  ## constraints), the parenthesis around parameter list can be omitted.
+  ##
+  ## Instance `argument` forms are trees with zero or more nodes replaced with
+  ## wildcards (``_``), the number of wildcards in a tree corresponding to
+  ## the form arity. A form can include existing types, as well as instance
+  ## `parameters`.
+  ##
+  ## Here are few valid parameter-argument combinations:
+  ##
+  ## .. code-block:: nim
+  ##
+  ##   []
+  ##   int
+  ##   Option[_]
+  ##   [int, string]
+  ##   K => Option[K]
+  ##   (K: SomeInteger, L) => [(K, L, Option[_]), (L, int)]
+  ##
+  ## Supported instance options:
+  ## 1. ``skipping(foo, bar...)`` - these definitions will be skipped.
+  ## 2. ``exporting(foo, bar)`` - these generated definitions will have export
+  ##    marker.
+  ## 3. ``exporting(_)`` - all generated definitions will have export marker.
+
   var opts = newSeq[NimNode]()
   for o in options: opts.add(o)
 
