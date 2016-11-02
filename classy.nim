@@ -77,11 +77,16 @@ type
     tree: NimNode
     arity: Natural
 
-  Typeclass* = object
+  Constraint = object
+    form: NimNode
+    class: Typeclass
+
+  Typeclass = ref object
     # Only here for better error messaging.
     # Do not use for membership checks and such!
     name: string
     patterns: seq[AbstractPattern]
+    constraints: seq[Constraint]
     body: NimNode
 
   TypeclassMember = object
@@ -284,6 +289,26 @@ proc parseAbstractPatterns(
       @[tree]
   )
   patternNodes.map(parseAbstractPattern)
+
+proc parseConstraint(
+  tree: NimNode
+): Constraint {.compileTime.} =
+  # TODO
+  discard
+
+proc parseConstraints(
+  tree: NimNode
+): seq[Constraint] {.compileTime.} =
+  # TODO
+  discard
+
+proc parseTypeclassSignature(
+  tree: NimNode
+): (seq[Constraint], seq[AbstractPattern]) {.compileTime.} =
+  if tree.kind == nnkInfix and tree[0].eqIdent("=>"):
+    (parseConstraints(tree[1]), parseAbstractPatterns(tree[2]))
+  else:
+    (@[], parseAbstractPatterns(tree))
 
 proc replace(n: NimNode, subst: seq[(NimNode, NimNode)]): NimNode {.compileTime.} =
   transformDown(n) do (sub: NimNode) -> auto:
@@ -547,7 +572,7 @@ proc instanceImpl(
 # defined variables
 var tc {.compiletime.} : Typeclass
 
-macro typeclass*(id, patternsTree: untyped, args: varargs[untyped]): typed =
+macro typeclass*(id, signatureTree: untyped, args: varargs[untyped]): typed =
   ## Define typeclass with name ``id``.
   ##
   ## This creates a compile-time variable with name ``id``.
@@ -576,7 +601,7 @@ macro typeclass*(id, patternsTree: untyped, args: varargs[untyped]): typed =
     fail("Missing body for typeclass" & $id)
   let options = parseTypeclassOptions(argsSeq[0..^2])
   let body = argsSeq[argsSeq.len - 1]
-  let patterns = parseAbstractPatterns(patternsTree)
+  let (constraints, patterns) = parseTypeclassSignature(signatureTree)
 
   let idTree = if options.exported: id.postfix("*") else: id
 
@@ -585,6 +610,7 @@ macro typeclass*(id, patternsTree: untyped, args: varargs[untyped]): typed =
   tc = Typeclass(
     name: $id,
     patterns: patterns,
+    constraints: constraints,
     body: body
   )
   let tcSym = bindSym("tc")

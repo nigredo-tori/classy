@@ -152,6 +152,20 @@ suite "Multi-parameter typeclasses":
       shouldWork: instance TwoArgs, [int, string]
       shouldFail: instance TwoArgs, [int, string, float]
 
+suite "Constraints":
+  test "Should work for the simple case":
+#    shouldWork:
+      typeclass Foo, F: discard
+      typeclass Bar, (B: Foo) => B: discard
+
+      instance Foo, int
+
+      shouldWork:
+        instance Bar, int
+
+      shouldFail:
+        instance Bar, string
+
 suite "Miscellaneous features":
   test "Skipping definitions":
     shouldWork:
