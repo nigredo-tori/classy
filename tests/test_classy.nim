@@ -152,9 +152,64 @@ suite "Multi-parameter typeclasses":
       shouldWork: instance TwoArgs, [int, string]
       shouldFail: instance TwoArgs, [int, string, float]
 
+suite "isTypeclassInstance":
+  test "Should work for simple case":
+    #shouldWork:
+      typeclass Foo, F: discard
+      instance Foo, int
+      instance Foo, float
+
+      check: isTypeclassInstance(int, Foo)
+      check: isTypeclassInstance(float, Foo)
+      check: not isTypeclassInstance(string, Foo)
+      check: not isTypeclassInstance(float, Foo)
+
+  test "Should work for simple type constructors":
+    shouldWork:
+      type A[T] = object
+      typeclass Foo, F[_]: discard
+      instance Foo, A
+
+      check: isTypeclassInstance(A[_], Foo)
+      check: not isTypeclassInstance(Option[_], Foo)
+
+  test "Should work for more complex constructors":
+    shouldWork:
+      type A[U, V] = object
+      type B[U, V] = object
+
+      typeclass Foo, F[_, _]: discard
+      instance Foo, A[_, _]
+
+      check: isTypeclassInstance(A[_, _], Foo)
+      check: not isTypeclassInstance(B[_,_], Foo)
+
+      type RevA[V, U] = A[U, V]
+      type RevRevA[U, V] = RevA[V, U] # same as A
+
+      check: not isTypeclassInstance(RevA[_, _], Foo)
+      check: isTypeclassInstance(RevRevA[_, _], Foo)
+
+  test "Should work for partial application":
+    shouldWork:
+      type A[U, V] = object
+      typeclass Foo, F[_]: discard
+      instance Foo, A[int, _]
+
+      check: isTypeclassInstance(A[int, _], Foo)
+      check: not isTypeclassInstance(A[string, _], Foo)
+
+  test "Should work (kind of) for instance parameters":
+    shouldWork:
+      type A[U, V] = object
+      typeclass Foo, F: discard
+      instance Foo, (I: SomeInteger) => A[I, I]
+
+      check: isTypeclassInstance((I: SomeInteger) => A[I, I], Foo)
+
 suite "Constraints":
   test "Should work for the simple case":
-#    shouldWork:
+    shouldWork:
       typeclass Foo, F: discard
       typeclass Bar, (B: Foo) => B: discard
 

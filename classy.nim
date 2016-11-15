@@ -615,6 +615,12 @@ proc instanceImpl(
 # ``quote`` does weirdest things here.
 var tc {.compiletime.} : Typeclass
 
+macro isTypeclassInstance*(
+  form: untyped,
+  class: static[Typeclass]
+): untyped =
+  newLit(false)
+
 macro typeclass*(id, signatureTree: untyped, args: varargs[untyped]): typed =
   ## Define typeclass with name ``id``.
   ##
