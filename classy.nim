@@ -78,7 +78,13 @@ type
     arity: Natural
 
   Constraint = object
+    # An untyped pattern, e.g. ``F[int, _, string]
+    # Can include typeclass parameters.
+    # Note that, since this is untyped, any concrete symbols here are resolved
+    # in instantiation time!!!
     form: NimNode
+    # It's bothersome to pull static typeclass objects out of untyped tree.
+    # For now a looked-up symbol is plenty.
     class: Typeclass
 
   Typeclass = ref object
@@ -112,6 +118,18 @@ type
   TransformTuple = object
     newNode: NimNode
     recurse: bool
+
+macro injectConstraint(
+  into: static[Typeclass],
+  form: untyped,
+  class: static[Typeclass]
+): typed =
+  let c = Constraint(
+    form: form,
+    class: class
+  )
+
+  into.constraints.add(c)
 
 proc mkTransformTuple(newNode: NimNode, recurse: bool): auto =
   TransformTuple(newNode: newNode, recurse: recurse)
@@ -290,24 +308,48 @@ proc parseAbstractPatterns(
   )
   patternNodes.map(parseAbstractPattern)
 
-proc parseConstraint(
-  tree: NimNode
-): Constraint {.compileTime.} =
-  # TODO
-  discard
+proc splitConstraintsTree(
+  constraintsTree: NimNode
+): seq[NimNode] {.compileTime.} =
+  ## Accepts constraints with syntax ``(A: TA, B: TB ...)`` or ``A: TA``.
+  ## Here ``A``, ``B`` are forms, and ``TA``, ``TB`` are existing typeclasses.
+  ## Returns AST ``A: TA`` for each pair.
+  if constraintsTree.kind == nnkPar:
+    # Parenthesized constraint list
+    toSeq(constraintsTree.children)
+  else:
+    # A lone constraint
+    @[constraintsTree]
 
-proc parseConstraints(
-  tree: NimNode
-): seq[Constraint] {.compileTime.} =
-  # TODO
-  discard
+proc makeInjectConstraintAst(
+  typeclassId: NimNode,
+  constraintTree: NimNode
+): NimNode {.compileTime.} =
+  if constraintTree.kind != nnkExprColonExpr:
+    error "Invalid constraint syntax", constraintTree
+  constraintTree.expectLen(2)
+
+  let form = constraintTree[0]
+  let class = constraintTree[1]
+  let injectConstraint = bindSym("injectConstraint", brClosed)
+
+  # We need another macro call here since we can't simply look up an ident:
+  # https://github.com/nim-lang/Nim/issues/3559 .
+  # We're lucky we don't have to generate macro definitions!
+  quote do:
+    `injectConstraint`(`typeclassId`, `form`, `class`)
 
 proc parseTypeclassSignature(
   tree: NimNode
-): (seq[Constraint], seq[AbstractPattern]) {.compileTime.} =
+): tuple[
+  constraintTrees: seq[NimNode],
+  patterns: seq[AbstractPattern]
+] {.compileTime.} =
   if tree.kind == nnkInfix and tree[0].eqIdent("=>"):
-    (parseConstraints(tree[1]), parseAbstractPatterns(tree[2]))
+    (splitConstraintsTree(tree[1]), parseAbstractPatterns(tree[2]))
   else:
+    # This
+    # TODO: something cleaner?
     (@[], parseAbstractPatterns(tree))
 
 proc replace(n: NimNode, subst: seq[(NimNode, NimNode)]): NimNode {.compileTime.} =
@@ -569,7 +611,8 @@ proc instanceImpl(
   result = result.addExportMarks(options.exporting)
 
 # A hack to allow passing ``Typeclass`` values from the macro to
-# defined variables
+# created compile-time variables.
+# ``quote`` does weirdest things here.
 var tc {.compiletime.} : Typeclass
 
 macro typeclass*(id, signatureTree: untyped, args: varargs[untyped]): typed =
@@ -601,7 +644,7 @@ macro typeclass*(id, signatureTree: untyped, args: varargs[untyped]): typed =
     fail("Missing body for typeclass" & $id)
   let options = parseTypeclassOptions(argsSeq[0..^2])
   let body = argsSeq[argsSeq.len - 1]
-  let (constraints, patterns) = parseTypeclassSignature(signatureTree)
+  let (constraintTrees, patterns) = parseTypeclassSignature(signatureTree)
 
   let idTree = if options.exported: id.postfix("*") else: id
 
@@ -610,12 +653,17 @@ macro typeclass*(id, signatureTree: untyped, args: varargs[untyped]): typed =
   tc = Typeclass(
     name: $id,
     patterns: patterns,
-    constraints: constraints,
+    constraints: newSeq[Constraint](),
     body: body
   )
   let tcSym = bindSym("tc")
-  quote do:
+
+  result = quote do:
     let `idTree` {.compileTime.} = `tcSym`
+
+  for n in constraintTrees:
+    let inject = makeInjectConstraintAst(idTree, n)
+    result.add(inject)
 
 macro instance*(
   class: static[Typeclass],
