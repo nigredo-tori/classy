@@ -91,6 +91,7 @@ type
     # Only here for better error messaging.
     # Do not use for membership checks and such!
     name: string
+    symbol: NimSym
     patterns: seq[AbstractPattern]
     constraints: seq[Constraint]
     body: NimNode
@@ -119,6 +120,23 @@ type
     newNode: NimNode
     recurse: bool
 
+  InstancePair = object
+    patternSample: NimNode
+    class: Typeclass
+
+template exportClassyInstances* =
+  ## Place this at the beginning of the module, to export all
+  ## instances, declared in module scope.
+  ##
+  ## Note that this doesn't export generated symbols for each
+  ## instance - only the fact that an instance exists.
+  var classyInstances* {.compileTime, inject.} = newSeq[`InstancePair`]()
+
+template defineClassyInstances =
+  when not definedInScope(classyInstances):
+    # We don't declare exported instance list implicitly!
+    var classyInstances {.compileTime, inject.} = newSeq[`InstancePair`]()
+
 macro injectConstraint(
   into: static[Typeclass],
   form: untyped,
@@ -130,6 +148,32 @@ macro injectConstraint(
   )
 
   into.constraints.add(c)
+
+macro injectSymbol(
+  into: static[Typeclass],
+  symTree: typed
+): typed =
+  into.symbol = symTree.symbol
+
+proc makeInstancePair(
+  pattern: NimNode,
+  class: Typeclass
+): InstancePair {.compileTime.} =
+  # TODO
+  discard
+
+var ip {.compileTime.}: InstancePair
+macro injectInstancePair(
+  instances: untyped,
+  pattern: untyped,
+  class: static[Typeclass]
+): typed =
+  ip = makeInstancePair(pattern, class)
+  let ipSym = bindSym("ip", brClosed)
+  quote do:
+    static:
+      # Always inject into closest instance list
+      `instances`.add(`ipSym`)
 
 proc mkTransformTuple(newNode: NimNode, recurse: bool): auto =
   TransformTuple(newNode: newNode, recurse: recurse)
@@ -336,8 +380,28 @@ proc makeInjectConstraintAst(
   # We need another macro call here since we can't simply look up an ident:
   # https://github.com/nim-lang/Nim/issues/3559 .
   # We're lucky we don't have to generate macro definitions!
-  quote do:
+  (quote do:
     `injectConstraint`(`typeclassId`, `form`, `class`)
+  )[0]
+
+proc makeInjectInstanceAst(
+  pattern: NimNode,
+  typeclassId: NimSym
+): NimNode {.compileTime.} =
+  # TODO: replace classyInstance with a unique ident? What about imports, then?
+  # TODO: don't export instances if the instance definition is not being exported
+  let injectInstancePair = bindSym("injectInstancePair")
+  let defineClassyInstances = bindSym("defineClassyInstances")
+  let InstancePair = bindSym("InstancePair")
+  quote do:
+    # We want our instances to respect scopes
+    `defineClassyInstances`
+    static:
+      `injectInstancePair`(
+        classyInstances,
+        `pattern`,
+        `typeclassId`
+      )
 
 proc parseTypeclassSignature(
   tree: NimNode
@@ -587,6 +651,7 @@ proc addExportMarks(
 
 proc instanceImpl(
   class: Typeclass,
+  rawPattern: NimNode,
   member: TypeclassMember,
   options: MemberOptions
 ): NimNode {.compileTime.} =
@@ -610,15 +675,20 @@ proc instanceImpl(
   result = result.replaceInProcs(member.params, substs)
   result = result.addExportMarks(options.exporting)
 
+  result.add(makeInjectInstanceAst(rawPattern, class.symbol))
+
 # A hack to allow passing ``Typeclass`` values from the macro to
 # created compile-time variables.
 # ``quote`` does weirdest things here.
 var tc {.compiletime.} : Typeclass
 
 macro isTypeclassInstance*(
-  form: untyped,
+  concretePattern: untyped,
   class: static[Typeclass]
 ): untyped =
+  ## Receives concrete pattern (type or type constructor with the same syntax as
+  ## in ``instance``), and a typeclass.
+  ## Returns ``true`` if the pattern is an instance of the typeclass.
   newLit(false)
 
 macro typeclass*(id, signatureTree: untyped, args: varargs[untyped]): typed =
@@ -653,6 +723,7 @@ macro typeclass*(id, signatureTree: untyped, args: varargs[untyped]): typed =
   let (constraintTrees, patterns) = parseTypeclassSignature(signatureTree)
 
   let idTree = if options.exported: id.postfix("*") else: id
+  let idTreeCopy = idTree.copyNimTree
 
   # Pass the value through ``tc``.
   # I do not know of a cleaner way to do this.
@@ -663,9 +734,11 @@ macro typeclass*(id, signatureTree: untyped, args: varargs[untyped]): typed =
     body: body
   )
   let tcSym = bindSym("tc")
+  let injectSymbol = bindSym("injectSymbol")
 
   result = quote do:
     let `idTree` {.compileTime.} = `tcSym`
+    `injectSymbol`(`idTree`, `idTreeCopy`)
 
   for n in constraintTrees:
     let inject = makeInjectConstraintAst(idTree, n)
@@ -727,7 +800,12 @@ macro instance*(
   var opts = newSeq[NimNode]()
   for o in options: opts.add(o)
 
-  result = instanceImpl(class, parseMember(argsTree), parseMemberOptions(opts))
+  result = instanceImpl(
+    class,
+    argsTree,
+    parseMember(argsTree),
+    parseMemberOptions(opts)
+  )
 
   # For debugging purposes
   when defined(classyDumpCode):
