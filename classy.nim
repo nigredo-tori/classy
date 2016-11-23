@@ -121,8 +121,40 @@ type
     recurse: bool
 
   InstancePair = object
-    patternSample: NimNode
+    patternSamples: seq[NimNode]
     class: Typeclass
+
+# We can't store patterns for instances as untyped trees - this would break
+# whenever time two scopes would disagree on something.
+# We can't simply store them as typed trees either - this doesn't
+# work for type constructors.
+# So we prepare them as follows:
+# 1. Take a pattern
+# 2. Replace all parameters with unique types from parameterTypes in order
+# 3. Replace all placeholder entries with unique types from placeholderTypes
+#   in order.
+# 4. Pass the result through semantic phase to resolve all types
+# 5. Done.
+# This way we get a concrete type to store, from which we can reconstruct
+# the initial pattern (except for constraints on parameters).
+
+# These types are only used here. So there's no way they collide with
+# some other type (unless someone gets into this library's internals).
+
+type Placeholder[n: static[int]] = object
+type Parameter[n: static[int]] = object
+
+proc parseMember(
+  tree: NimNode
+): TypeclassMember {.compileTime.}
+
+proc transformDown(
+  tree: NimNode,
+  f: NimNode -> TransformTuple
+): NimNode {.compileTime.}
+
+proc mkTransformTuple(newNode: NimNode, recurse: bool): auto =
+  TransformTuple(newNode: newNode, recurse: recurse)
 
 template exportClassyInstances* =
   ## Place this at the beginning of the module, to export all
@@ -156,11 +188,54 @@ macro injectSymbol(
   into.symbol = symTree.symbol
 
 proc makeInstancePair(
-  pattern: NimNode,
+  instanceSignature: NimNode,
   class: Typeclass
 ): InstancePair {.compileTime.} =
-  # TODO
-  discard
+
+  proc replaceParams(n: NimNode, params: seq[NimNode]): TransformTuple =
+    for i, p in params:
+      if n == p[0]:
+        let res = newTree(
+          nnkBracketExpr,
+          bindSym("Parameter", brClosed),
+          newIntLitNode(i)
+        )
+        return mkTransformTuple(
+          res,
+          false
+        )
+    return mkTransformTuple(n, true)
+
+  proc replacePlaceholders(n: NimNode): NimNode =
+    var i = 0
+    proc worker(n: NimNode): TransformTuple =
+      if n.eqIdent("_"):
+        let res = newTree(
+          nnkBracketExpr,
+          bindSym("Placeholder", brClosed),
+          newIntLitNode(i)
+        )
+        inc i
+        return mkTransformTuple(
+          res,
+          false
+        )
+      return mkTransformTuple(n, true)
+
+    return n.transformDown(worker)
+
+  let instance = parseMember(instanceSignature)
+  var samples = newSeq[NimNode]()
+
+  for pattern in instance.patterns:
+    let sample = pattern.tree
+      .transformDown(n => replaceParams(n, instance.params))
+      .replacePlaceholders
+
+  InstancePair(
+    patternSamples: samples,
+    class: class
+  )
 
 var ip {.compileTime.}: InstancePair
 macro injectInstancePair(
@@ -174,9 +249,6 @@ macro injectInstancePair(
     static:
       # Always inject into closest instance list
       `instances`.add(`ipSym`)
-
-proc mkTransformTuple(newNode: NimNode, recurse: bool): auto =
-  TransformTuple(newNode: newNode, recurse: recurse)
 
 template fail(msg: string, n: NimNode = nil) =
   let errMsg = if n != nil: msg & ": " & $toStrLit(n) else: msg
@@ -196,7 +268,7 @@ proc replaceInBody(
 proc transformDown(
   tree: NimNode,
   f: NimNode -> TransformTuple
-): NimNode {.compileTime.} =
+): NimNode =
   let tup = f(tree.copyNimTree)
 
   result = tup.newNode
@@ -454,7 +526,7 @@ proc genSymParams(
 
 proc parseMember(
   tree: NimNode
-): TypeclassMember {.compileTime.} =
+): TypeclassMember =
   ## Parse typeclass member patterns in one of following forms:
   ## - ``(A: T1, B..) => [Constr[A, _, ...], Concrete, ...]``
   ## - ``(A: T1, B..) => Constr[A, _, ...]``
