@@ -1,5 +1,5 @@
 import macros, future
-from sequtils import apply, map, zip, toSeq, applyIt, allIt, mapIt
+from sequtils import apply, map, zip, toSeq, applyIt, allIt, mapIt, concat, filterIt, foldl
 
 ## Classy
 ## ======
@@ -156,6 +156,16 @@ proc transformDown(
 proc mkTransformTuple(newNode: NimNode, recurse: bool): auto =
   TransformTuple(newNode: newNode, recurse: recurse)
 
+proc `==`(a, b: Typeclass): bool =
+  # I can't seem to find a direct way to compare two symbols
+  # TODO: use some artificial typeclass ID fields?
+  var na = newNimNode(nnkSym)
+  na.symbol = a.symbol
+  var nb = newNimNode(nnkSym)
+  nb.symbol = b.symbol
+
+  na == nb
+
 template exportClassyInstances* =
   ## Place this at the beginning of the module, to export all
   ## instances, declared in module scope.
@@ -187,10 +197,10 @@ macro injectSymbol(
 ): typed =
   into.symbol = symTree.symbol
 
-proc makeInstancePair(
-  instanceSignature: NimNode,
-  class: Typeclass
-): InstancePair {.compileTime.} =
+proc makeSamples(
+  instanceSignature: NimNode
+): seq[NimNode] =
+  ## Parse instance signature and construct samples for concrete patterns
 
   proc replaceParams(n: NimNode, params: seq[NimNode]): TransformTuple =
     for i, p in params:
@@ -231,9 +241,16 @@ proc makeInstancePair(
     let sample = pattern.tree
       .transformDown(n => replaceParams(n, instance.params))
       .replacePlaceholders
+    samples.add(sample)
 
+  samples
+
+proc makeInstancePair(
+  instanceSignature: NimNode,
+  class: Typeclass
+): InstancePair {.compileTime.} =
   InstancePair(
-    patternSamples: samples,
+    patternSamples: makeSamples(instanceSignature),
     class: class
   )
 
@@ -749,10 +766,51 @@ proc instanceImpl(
 
   result.add(makeInjectInstanceAst(rawPattern, class.symbol))
 
-# A hack to allow passing ``Typeclass`` values from the macro to
-# created compile-time variables.
-# ``quote`` does weirdest things here.
-var tc {.compiletime.} : Typeclass
+macro sampleMatches(a, b: typedesc): untyped =
+  let aType = a.getTypeInst[1]
+  let bType = b.getTypeInst[1]
+  let res = aType.sameType(bType)
+  newLit(res)
+
+proc samplesMatch(
+  xs, ys: seq[NimNode],
+  className: string,
+  concretePattern: NimNode
+): NimNode =
+  ## Costruct an expression that evalues to ``true`` iff ``xs`` matches ``ys``.
+  # TODO: properly check arity/shape
+  if xs.len != ys.len:
+    error(
+      "Incorrect arity for typeclass " & className,
+      concretePattern
+    )
+
+  let sampleMatches = bindSym"sampleMatches"
+  let boolAnd = bindSym"and"
+
+  # TODO: more precise matching
+  # e.g. this fails if existing instance is more general
+  xs.zip(ys)
+    .mapIt(newCall(`sampleMatches`, it.a, it.b))
+    .foldl(newCall(boolAnd, a, b), newLit(true))
+
+macro isTypeclassInstanceImpl(
+  concretePattern: untyped,
+  class: static[Typeclass],
+  instances: static[seq[InstancePair]]
+): untyped =
+  ## Costruct an expression that statically evalues to ``true`` iff
+  ##``concretePattern`` has an instance of ``class``.
+  ## For now matching is defined as equality.
+  let samples = makeSamples(concretePattern)
+
+  let boolOr = bindSym"or"
+
+  instances.filterIt(it.class == class)
+    .mapIt(samples.samplesMatch(
+      it.patternSamples,
+      class.name, concretePattern
+    )).foldl(newCall(boolOr, a, b), newLit(false))
 
 macro isTypeclassInstance*(
   concretePattern: untyped,
@@ -761,7 +819,55 @@ macro isTypeclassInstance*(
   ## Receives concrete pattern (type or type constructor with the same syntax as
   ## in ``instance``), and a typeclass.
   ## Returns ``true`` if the pattern is an instance of the typeclass.
-  newLit(false)
+
+  let getInstances = genSym(nskMacro, "getInstances")
+  let concat = bindSym("concat", brClosed)
+  let isTypeclassInstanceImpl = bindSym("isTypeclassInstanceImpl")
+
+  let classSym = class.symbol
+  let treeRepr = bindSym("treeRepr")
+
+  result = quote do:
+    macro `getInstances`(): untyped =
+      # Following is a simple fold, made more verbose due to
+      # scoping and typing considerations
+      let choice = bindSym("classyInstances", brForceOpen)
+      if choice.len == 0:
+        return (
+          quote do:
+            @[]
+        )[0]
+
+      var res: NimNode = nil
+
+      for i in 0..<choice.len:
+        if res == nil:
+          res = choice[i]
+        else:
+          res = newCall(
+            ident"&",
+            res,
+            choice[i]
+          )
+
+      res
+
+    `isTypeclassInstanceImpl`(
+      `concretePattern`,
+      `classSym`,
+      `getInstances`()
+    )
+
+  # For debugging purposes
+  when defined(classyDumpCode):
+    echo toStrLit(result)
+  when defined(classyDumpTree):
+    echo treeRepr(result)
+
+# A hack to allow passing ``Typeclass`` values from the macro to
+# created compile-time variables.
+# ``quote`` does weirdest things here.
+var tc {.compiletime.} : Typeclass
 
 macro typeclass*(id, signatureTree: untyped, args: varargs[untyped]): typed =
   ## Define typeclass with name ``id``.
@@ -807,6 +913,7 @@ macro typeclass*(id, signatureTree: untyped, args: varargs[untyped]): typed =
   )
   let tcSym = bindSym("tc")
   let injectSymbol = bindSym("injectSymbol")
+  let symSym = bindSym("symbol")
 
   result = quote do:
     let `idTree` {.compileTime.} = `tcSym`
@@ -815,6 +922,12 @@ macro typeclass*(id, signatureTree: untyped, args: varargs[untyped]): typed =
   for n in constraintTrees:
     let inject = makeInjectConstraintAst(idTree, n)
     result.add(inject)
+
+  # For debugging purposes
+  when defined(classyDumpCode):
+    echo toStrLit(result)
+  when defined(classyDumpTree):
+    echo treeRepr(result)
 
 macro instance*(
   class: static[Typeclass],

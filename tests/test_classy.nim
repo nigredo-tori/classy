@@ -154,7 +154,7 @@ suite "Multi-parameter typeclasses":
 
 suite "isTypeclassInstance":
   test "Should work for simple case":
-    #shouldWork:
+    shouldWork:
       typeclass Foo, F: discard
       instance Foo, int
       instance Foo, float
@@ -162,13 +162,21 @@ suite "isTypeclassInstance":
       check: isTypeclassInstance(int, Foo)
       check: isTypeclassInstance(float, Foo)
       check: not isTypeclassInstance(string, Foo)
-      check: not isTypeclassInstance(float, Foo)
+      check: not isTypeclassInstance(bool, Foo)
+
+  test "Shouldn't confuse typeclasses in simple case":
+    typeclass Foo, F: discard
+    typeclass Bar, F: discard
+    instance Foo, int
+
+    check: isTypeclassInstance(int, Foo)
+    check: not isTypeclassInstance(int, Bar)
 
   test "Should work for simple type constructors":
     shouldWork:
       type A[T] = object
       typeclass Foo, F[_]: discard
-      instance Foo, A
+      instance Foo, A[_]
 
       check: isTypeclassInstance(A[_], Foo)
       check: not isTypeclassInstance(Option[_], Foo)
