@@ -192,6 +192,7 @@ suite "isTypeclassInstance":
       check: isTypeclassInstance(A[_, _], Foo)
       check: not isTypeclassInstance(B[_,_], Foo)
 
+      # Shouldn't confuse parameters
       type RevA[V, U] = A[U, V]
       type RevRevA[U, V] = RevA[V, U] # same as A
 
@@ -214,6 +215,27 @@ suite "isTypeclassInstance":
       instance Foo, (I: SomeInteger) => A[I, I]
 
       check: isTypeclassInstance((I: SomeInteger) => A[I, I], Foo)
+
+  test "Should not confuse instance parameters with placeholders":
+    shouldWork:
+      type A[U, V] = object
+      typeclass Foo, F[_]: discard
+      instance Foo, I => A[I, _]
+
+      check: isTypeclassInstance(I => A[I, _], Foo)
+      check: not isTypeclassInstance(I => A[_, I], Foo)
+      check: not isTypeclassInstance(I => A[I, I], Foo)
+
+  test "Should correctly resolve instances with more general parameters":
+    #shouldWork:
+      type A[U, V, W] = object
+      typeclass Foo, F: discard
+
+      instance Foo, (X, Y) => A[X, Y, Y]
+
+      check: isTypeclassInstance((X, Y) => A[X, Y, Y], Foo)
+      check: isTypeclassInstance(Z => A[Z, Z, Z], Foo)
+      check: not isTypeclassInstance((X, Y) => A[X, X, Y], Foo)
 
 suite "Constraints":
   test "Should work for the simple case":

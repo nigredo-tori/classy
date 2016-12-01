@@ -23,14 +23,14 @@ from sequtils import apply, map, zip, toSeq, applyIt, allIt, mapIt, concat, filt
 ##       fmap(fa, (a: A) => b)
 ##
 ## This code does not declare any procs - only a compile-time variable ``Functor``.
-## Notice that our code abstracts over type constructor - ``F`` is just a
+## A point of note is that our code abstracts over a type constructor - ``F`` is just a
 ## placeholder.
 ##
 ## Notice that ``fmap`` is not part of the typeclass. At the moment forward
 ## declarations don't work for generic procs in Nim. As we'll see, even if
 ## proc AST in our typeclass has no generic parameters, the generated proc
-## can have some. So it is recommended to not define unimplemented procs
-## inside typeclasses. This will probably change after this issue is closed:
+## can have some. So defining unimplemented procs in typeclasses is not recommended.
+## The situation is likely to change after this issue is closed:
 ## https://github.com/nim-lang/Nim/issues/4104.
 ##
 ## Now let's instantiate our typeclass. For example, let's define a ``Functor``
@@ -767,6 +767,60 @@ proc instanceImpl(
   result.add(makeInjectInstanceAst(rawPattern, class.symbol))
 
 macro sampleMatches(a, b: typedesc): untyped =
+  ## Compare two type *samples*.
+  ##
+  ## More specifically, `a` matches `b` iff there exists a family of types
+  ## `B1`..`Bm`, such that substituting them for instance parameters (but not
+  ## placeholders!) in `b` produces type `b_s`, such that:
+  ## - All instance parameters in `b` are replaced.
+  ## - `B_i` contains no placeholders (but can contain instance parameters).
+  ## - `a` and `b_s` refer to the same type.
+  ##
+  ## For example, let `a` be the following type:
+  ## `Foo[Param1], Placeholder1, Bar[Param1]]`,
+  ## and `b` be the following type:
+  ## `Foo[Param1], Placeholder1, Param2]`.
+  ## If we choose `B_1 = Param1` and `B_2 = Bar[Param2]`, we can see that
+  ## `sampleMatches(a, b)`.
+  ##
+  ## Perhaps, a more intuitive way to think about it would be the following:
+  ##
+  ## .. code-block::
+  ##
+  ##   proc f[Param1..](x: b) = discard
+  ##   var y: a
+  ##   result = compiles(f(y))
+  ##
+  ## Of course, this doesn't account for implicit converters, `void`, and so on.
+  ## That's why we have to implement our own matching algorithm.
+  ##
+  ## The outline of the algorithm is as follows:
+  ## 1. Maintain a map `M` of parameters to types in `a` (which starts empty).
+  ## 2. Resolve type aliases in both types. Do not resolve implementation,
+  ##    distinct types etc.
+  ## 3. Traverse the type trees `a` and `b` simultaneously in pre-order (steps **4**-**7**)
+  ## 4. If `b` is a placeholder:
+  ##    - If `a` is not the same placeholder - return `false`.
+  ##    - Do not recurse
+  ## 5. If `b` is a parameter:
+  ##    - If `b` is not in `M` (*unbound*) and `a` includes a
+  ##      placeholder at any position - return `false`.
+  ##    - If `b` is not in `M` - add a record `a -> b` to `M`.
+  ##    - Otherwise, if `a` and `M[b]` do not refer to the same type -
+  ##      return `false`.
+  ##    - Do not recurse.
+  ## 6. If `b` is not result of application of a type constructor (if
+  ##    `b` is a primitive type, non-generic object, non-generic distinct type
+  ##    etc.):
+  ##    - If `a` and `b` don't refer to the same type - return `false`
+  ##    - Do not recurse.
+  ## 7. If `b` is a result application of a type constructor (a generic type, a tuple, etc.):
+  ##    - If `a` is not a result of application of the same constructor - return `false`
+  ##    - Repeat steps **4**-**7** for each pair of corresponding arguments to this
+  ##      type constructor in `a` and `b`
+  ## 8. return `true`
+
+  # TODO
   let aType = a.getTypeInst[1]
   let bType = b.getTypeInst[1]
   let res = aType.sameType(bType)
