@@ -37,7 +37,7 @@ Also refer to [example](example.nim) for a quick tutorial.
 ## Testing
 
 ```bash
-$ nimble tests
+$ nim tests
 ```
 
 ## Stability

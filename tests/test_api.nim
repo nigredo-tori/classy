@@ -196,7 +196,9 @@ suite "isTypeclassInstance":
       type RevA[V, U] = A[U, V]
       type RevRevA[U, V] = RevA[V, U] # same as A
 
+      static: echo "before"      
       check: not isTypeclassInstance(RevA[_, _], Foo)
+      static: echo "after"
       check: isTypeclassInstance(RevRevA[_, _], Foo)
 
   test "Should work for partial application":

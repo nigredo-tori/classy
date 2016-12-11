@@ -766,6 +766,36 @@ proc instanceImpl(
 
   result.add(makeInjectInstanceAst(rawPattern, class.symbol))
 
+proc stripGenericAliases(t: NimNode): NimNode =
+  # e.g.:
+  # type EitherS[A] = Either[string, A]
+  t.expectKind(nnkBracketExpr)
+  result = t
+  while result[0].kind == nnkBracketExpr:
+    result = result[0]
+
+proc getParameterPos(t: NimNode): int =
+  t.expectKind(nnkBracketExpr)
+  t.expectLen(2)
+  t[0].expectKind(nnkSym)
+  t[1].expectKind(nnkIntLit)
+  t[1].intVal.int
+
+proc lookup[A, B](s: seq[(A, B)], a: A): B =
+  for t in s:
+    if t[0] == a: return t[1]
+  return nil
+
+proc hasPlaceholders(n: NimNode): bool =
+  let placeholderSym = bindSym"Placeholder"
+  if n.kind == nnkSym and n == placeholderSym:
+    return true
+  else:
+    for sub in n:
+      if hasPlaceholders(sub):
+        return true
+    return false
+
 macro sampleMatches(a, b: typedesc): untyped =
   ## Compare two type *samples*.
   ##
@@ -795,7 +825,7 @@ macro sampleMatches(a, b: typedesc): untyped =
   ## That's why we have to implement our own matching algorithm.
   ##
   ## The outline of the algorithm is as follows:
-  ## 1. Maintain a map `M` of parameters to types in `a` (which starts empty).
+  ## 1. Maintain a map `m` of parameters to types in `a` (which starts empty).
   ## 2. Resolve type aliases in both types. Do not resolve implementation,
   ##    distinct types etc.
   ## 3. Traverse the type trees `a` and `b` simultaneously in pre-order (steps **4**-**7**)
@@ -803,10 +833,10 @@ macro sampleMatches(a, b: typedesc): untyped =
   ##    - If `a` is not the same placeholder - return `false`.
   ##    - Do not recurse
   ## 5. If `b` is a parameter:
-  ##    - If `b` is not in `M` (*unbound*) and `a` includes a
+  ##    - If `b` is not in `m` (*unbound*) and `a` includes a
   ##      placeholder at any position - return `false`.
-  ##    - If `b` is not in `M` - add a record `a -> b` to `M`.
-  ##    - Otherwise, if `a` and `M[b]` do not refer to the same type -
+  ##    - If `b` is not in `m` - add a record `a -> b` to `m`.
+  ##    - Otherwise, if `a` and `m[b]` do not refer to the same type -
   ##      return `false`.
   ##    - Do not recurse.
   ## 6. If `b` is not result of application of a type constructor (if
@@ -820,11 +850,75 @@ macro sampleMatches(a, b: typedesc): untyped =
   ##      type constructor in `a` and `b`
   ## 8. return `true`
 
-  # TODO
-  let aType = a.getTypeInst[1]
-  let bType = b.getTypeInst[1]
-  let res = aType.sameType(bType)
-  newLit(res)
+  let placeholderSym = bindSym("Placeholder", brClosed)
+  let parameterSym = bindSym("Parameter", brClosed)
+
+  # 1
+  var m = newSeq[(int, NimNode)]()
+  # 2
+  let a0 = a.getTypeInst[1]
+  let b0 = b.getTypeInst[1]
+
+  # 3
+  proc worker(a, b: NimNode, m: var seq[(int, NimNode)]): bool =
+    ## Returns false if a mismatch has been established
+    if b.typeKind in { ntyGenericInst, ntyArray, ntySet, ntyRange, ntyPtr,
+                       ntyRef, ntyVar, ntySequence, ntyOpenArray }:
+      # `b` is an instantiation of a generic (or something like it -
+      # array, seq, ref, ptr, etc.)
+      let bImpl: NimNode = b.stripGenericAliases
+      if bImpl[0] == placeholderSym: # symeq
+        # 4 - `b` is a placeholder
+        return a.sameType(b)
+      elif bImpl[0] == parameterSym: # symeq
+        # 5 - `b` is a parameter
+        let bPos: int = getParameterPos(bImpl)
+        let sub = m.lookup(bPos)
+        let unbound = sub.isNil
+        if unbound and a.hasPlaceholders:
+          # 5a - `b` is unbound, and `a` has placeholders somewhere
+          return false
+        elif unbound:
+          # 5b - `b` is unbound, `a` has no placeholders
+          m.add((bPos, a))
+          # continue matching
+          return true
+        else:
+          # 5c - `b` is bound
+          return a.sameType(sub)
+      else:
+        # 7 - `b` is some other generic instantiation
+        if a.typeKind != b.typeKind:
+          return false # 7a
+
+        if a.typeKind == ntyGenericInst:
+          # Only makes sense for user generics - they have their symbols
+          # preserved by `getType`. Builtin generics don't - but for them
+          # typeKind is enough.
+          let aImpl: NimNode = a.stripGenericAliases
+          if aImpl[0] != bImpl[0]: # symeq
+            return false # 7a
+
+        # 7b - `a` and `b` are instantiations of the same generic
+        a.expectLen(b.len)
+        for i in 1..<b.len:
+          if not worker(a[i], b[i], m):
+            return false
+        # 8
+        return true
+    # TODO: tuples!
+    elif b.typeKind in { ntyBool, ntyChar, ntyString, ntyCString,
+                         ntyInt..ntyUInt64, ntyObject, ntyDistinct }:
+      # 6 - atomic type
+      return b.sameType(a)
+    else:
+      echo "in tree:"
+      echo treeRepr(b)
+      # TODO: consider carefully anything that falls here
+      error("Unsupported typekind: " & $b.typeKind, b)
+
+  let res = worker(a0, b0, m)
+  res.newLit
 
 proc samplesMatch(
   xs, ys: seq[NimNode],
