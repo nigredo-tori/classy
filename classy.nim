@@ -26,7 +26,7 @@ from sequtils import apply, map, zip, toSeq, applyIt, allIt, mapIt, concat, filt
 ## Notice that our code abstracts over type constructor - ``F`` is just a
 ## placeholder.
 ##
-## Notice that we ``fmap`` is not part of the typeclass. At the moment forward
+## Notice that ``fmap`` is not part of the typeclass. At the moment forward
 ## declarations don't work for generic procs in Nim. As we'll see, even if
 ## proc AST in our typeclass has no generic parameters, the generated proc
 ## can have some. So it is recommended to not define unimplemented procs
