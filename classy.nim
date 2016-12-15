@@ -768,11 +768,12 @@ proc instanceImpl(
 
 proc stripGenericAliases(t: NimNode): NimNode =
   # e.g.:
-  # type EitherS[A] = Either[string, A]
-  t.expectKind(nnkBracketExpr)
+  # type EitherS[A] -> Either[string, A]
   result = t
-  while result[0].kind == nnkBracketExpr:
-    result = result[0]
+  var cur = t
+  while cur.kind == nnkBracketExpr:
+    result = cur
+    cur = cur[0]
 
 proc getParameterPos(t: NimNode): int =
   t.expectKind(nnkBracketExpr)
@@ -860,19 +861,22 @@ macro sampleMatches(a, b: typedesc): untyped =
   let b0 = b.getTypeInst[1]
 
   # 3
-  proc worker(a, b: NimNode, m: var seq[(int, NimNode)]): bool =
+  proc worker(aRaw, bRaw: NimNode, m: var seq[(int, NimNode)]): bool =
     ## Returns false if a mismatch has been established
+
+    let a = aRaw.stripGenericAliases
+    let b = bRaw.stripGenericAliases
+
     if b.typeKind in { ntyGenericInst, ntyArray, ntySet, ntyRange, ntyPtr,
                        ntyRef, ntyVar, ntySequence, ntyOpenArray }:
       # `b` is an instantiation of a generic (or something like it -
       # array, seq, ref, ptr, etc.)
-      let bImpl: NimNode = b.stripGenericAliases
-      if bImpl[0] == placeholderSym: # symeq
+      if b[0] == placeholderSym: # symeq
         # 4 - `b` is a placeholder
         return a.sameType(b)
-      elif bImpl[0] == parameterSym: # symeq
+      elif b[0] == parameterSym: # symeq
         # 5 - `b` is a parameter
-        let bPos: int = getParameterPos(bImpl)
+        let bPos: int = getParameterPos(b)
         let sub = m.lookup(bPos)
         let unbound = sub.isNil
         if unbound and a.hasPlaceholders:
@@ -896,7 +900,7 @@ macro sampleMatches(a, b: typedesc): untyped =
           # preserved by `getType`. Builtin generics don't - but for them
           # typeKind is enough.
           let aImpl: NimNode = a.stripGenericAliases
-          if aImpl[0] != bImpl[0]: # symeq
+          if aImpl[0] != b[0]: # symeq
             return false # 7a
 
         # 7b - `a` and `b` are instantiations of the same generic
@@ -908,7 +912,9 @@ macro sampleMatches(a, b: typedesc): untyped =
         return true
     # TODO: tuples!
     elif b.typeKind in { ntyBool, ntyChar, ntyString, ntyCString,
-                         ntyInt..ntyUInt64, ntyObject, ntyDistinct }:
+                         ntyInt..ntyUInt64, ntyObject, ntyDistinct,
+                         ntyGenericBody, # This happens with some aliases
+                       }:
       # 6 - atomic type
       return b.sameType(a)
     else:

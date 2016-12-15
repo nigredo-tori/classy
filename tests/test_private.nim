@@ -199,12 +199,12 @@ suite "sampleMatches":
       C[X, Y] = object
 
       AAlias = A
-      #AConstAlias[X] = A
       BAlias[X] = B[X]
       BIntAlias = B[int]
       CAlias[X, Y] = C[X, Y]
-      CIntAlias[int, Y] = C[int, Y]
-      CRevAlias[X, Y] = C[X, Y]
+      CIntAlias[Y] = C[int, Y]
+      CRevAlias[Y, X] = C[X, Y]
+      CDoubleAlias[X] = C[X, X]
 
     check: sampleMatches(A, AAlias)
     check: sampleMatches(AAlias, A)
@@ -216,12 +216,8 @@ suite "sampleMatches":
 
     check: sampleMatches(BAlias[BAlias[int]], B[B[int]])
     check: sampleMatches(B[B[int]], BAlias[BAlias[int]])
-    check: sampleMatches(BAlias[BAlias[int]], B[B[string]])
-    check: sampleMatches(B[B[string]], BAlias[BAlias[int]])
-
-    check: sampleMatches(AConstAlias[int], A)
-    check: sampleMatches(A, AConstAlias[int])
-    check: sampleMatches(AConstAlias[string], AConstAlias[int])
+    check: not sampleMatches(BAlias[BAlias[int]], B[B[string]])
+    check: not sampleMatches(B[B[string]], BAlias[BAlias[int]])
 
     check: sampleMatches(CAlias[int, string], C[int, string])
     check: sampleMatches(C[int, string], CAlias[int, string])
@@ -239,4 +235,54 @@ suite "sampleMatches":
     check: sampleMatches(C[string, int], CRevAlias[int, string])
     check: not sampleMatches(CRevAlias[int, string], C[int, string])
 
-  # TODO check that aliases don't block recursion in placeholder check
+    check: sampleMatches(CDoubleAlias[int], C[int, int])
+    check: not sampleMatches(CDoubleAlias[int], C[string, string])
+    check: not sampleMatches(CDoubleAlias[int], C[int, string])
+    check: not sampleMatches(CDoubleAlias[int], C[string, int])
+
+    check: sampleMatches(C[int, int], CDoubleAlias[int])
+    check: not sampleMatches(C[string, string], CDoubleAlias[int])
+    check: not sampleMatches(C[int, string], CDoubleAlias[int])
+    check: not sampleMatches(C[string, int], CDoubleAlias[int])
+
+  test "Should work for aliases with unused parameters":
+    # These are handled differently by `getTypeInst` for some reason
+    # TODO: Can't properly handle this case at the moment:
+    # https://github.com/nim-lang/Nim/issues/5121
+    type
+      A = object
+      AAlias = A
+      AConstAlias[X] = A
+
+    check: sampleMatches(AConstAlias[int], A)
+    check: sampleMatches(A, AConstAlias[int])
+    check: sampleMatches(AAlias, AConstAlias[int])
+    check: sampleMatches(AConstAlias[string], AAlias)
+
+  test "Aliases don't block recursion in placeholder check":
+    # TODO: Can't properly handle this case at the moment:
+    # https://github.com/nim-lang/Nim/issues/5121
+    type
+      A[X] = X
+      B = Placeholder[0]
+      C = int
+
+    check: sampleMatches(
+      A[C],
+      Parameter[0],
+    )
+
+    check: not sampleMatches(
+      B,
+      Parameter[0],
+    )
+
+    check: not sampleMatches(
+      A[Placeholder[0]],
+      Parameter[0],
+    )
+
+    check: not sampleMatches(
+      A[B],
+      Parameter[0],
+    )
