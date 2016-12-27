@@ -228,3 +228,10 @@ suite "Miscellaneous features":
         let bazVal*: F = 0
 
       instance Baz, int
+
+  test "Shouldn't allow incorrect instance options":
+    typeclass Foo, F:
+      discard
+
+    shouldFail:
+      instance Foo, int, invalid()

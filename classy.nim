@@ -377,7 +377,7 @@ proc parseMemberOptions(
         a[i].expectKind({nnkIdent, nnkAccQuoted})
         result.skipping.add(a[i])
 
-    if a.kind == nnkCall and a[0].eqIdent("exporting"):
+    elif a.kind == nnkCall and a[0].eqIdent("exporting"):
       if result.exporting.kind != eoNone:
         fail("Duplicate exporting clause", a)
       var acc = newSeq[NimNode]()
@@ -392,6 +392,9 @@ proc parseMemberOptions(
         result.exporting = ExportOptions(kind: eoAll)
       else:
         result.exporting = ExportOptions(kind: eoSome, patterns: acc)
+
+    else:
+      fail("Invalid instance option", a)
 
 proc parseTypeclassOptions(
   args: seq[NimNode]
