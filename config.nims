@@ -1,8 +1,8 @@
 # Tasks
 
 task tests, "Run tests":
-  selfExec "tests_private"
-  selfExec "tests_api"
+  selfExec "test_private"
+  selfExec "test_api"
 
 task test_api, "Run public API tests":
   --run
