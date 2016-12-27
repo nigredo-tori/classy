@@ -507,12 +507,32 @@ proc addExportMarks(
     of eoAll: true
     of eoSome: opts.patterns.contains(n)
 
+  proc stripExportMark(n: NimNode): NimNode =
+    if n.kind == nnkPostfix: n.basename else: n
+
+  proc withExportMark(n: NimNode, mark: bool): NimNode =
+    if mark: n.postfix("*") else: n
+
   proc worker(sub: NimNode): TransformTuple =
-    let matches = sub.kind in RoutineNodes and exporting.contains(sub.name)
-    if matches:
+    case sub.kind
+    of RoutineNodes:
+      let name = sub.name.stripExportMark
+      let exported = exporting.contains(name)
       let res = sub.copyNimTree
-      res.name = sub.name.postfix("*")
+      # Add or remove export mark
+      res.name = name.withExportMark(exported)
+      # We're only processing top-level routines
       mkTransformTuple(res, false)
+
+    of nnkIdentDefs:
+      let name = sub[0].stripExportMark
+      let exported = exporting.contains(name)
+      let res = sub.copyNimTree
+      res[0] = name.withExportMark(exported)
+      # We're only processing top-level definitions
+      # TODO: handle exports for object fields
+      mkTransformTuple(res, false)
+
     else:
       mkTransformTuple(sub, true)
 
