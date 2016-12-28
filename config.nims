@@ -1,17 +1,31 @@
+import ./classy.nimble
+import ospaths
+
 # Tasks
 
-task tests, "Run tests":
-  selfExec "test_private"
-  selfExec "test_api"
+proc createDirs() =
+  mkDir binDir
 
-task test_api, "Run public API tests":
-  --run
-  setCommand "c", "tests/test_api.nim"
+task tests, "Run all tests":
+  exec "nim test_private"
+  exec "nim test_classy"
+  exec "nim example"
 
-task test_private, "Run private tests":
+task test_private, "Run classy private test":
+  createDirs()
+  switch("out", binDir / "test_private".toExe)
   --run
   setCommand "c", "tests/test_private.nim"
 
+
+task test_classy, "Run classy API test":
+  createDirs()
+  switch("out", binDir / "test_classy".toExe)
+  --run
+  setCommand "c", "tests/test_classy.nim"
+
 task example, "Run example":
+  createDirs()
+  switch("out", binDir / "example".toExe)
   --run
   setCommand "c", "example.nim"

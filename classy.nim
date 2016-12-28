@@ -597,7 +597,7 @@ proc parseMemberOptions(
         a[i].expectKind({nnkIdent, nnkAccQuoted})
         result.skipping.add(a[i])
 
-    if a.kind == nnkCall and a[0].eqIdent("exporting"):
+    elif a.kind == nnkCall and a[0].eqIdent("exporting"):
       if result.exporting.kind != eoNone:
         fail("Duplicate exporting clause", a)
       var acc = newSeq[NimNode]()
@@ -612,6 +612,9 @@ proc parseMemberOptions(
         result.exporting = ExportOptions(kind: eoAll)
       else:
         result.exporting = ExportOptions(kind: eoSome, patterns: acc)
+
+    else:
+      fail("Invalid instance option", a)
 
 proc parseTypeclassOptions(
   args: seq[NimNode]
@@ -727,12 +730,32 @@ proc addExportMarks(
     of eoAll: true
     of eoSome: opts.patterns.contains(n)
 
+  proc stripExportMark(n: NimNode): NimNode =
+    if n.kind == nnkPostfix: n.basename else: n
+
+  proc withExportMark(n: NimNode, mark: bool): NimNode =
+    if mark: n.postfix("*") else: n
+
   proc worker(sub: NimNode): TransformTuple =
-    let matches = sub.kind in RoutineNodes and exporting.contains(sub.name)
-    if matches:
+    case sub.kind
+    of RoutineNodes:
+      let name = sub.name.stripExportMark
+      let exported = exporting.contains(name)
       let res = sub.copyNimTree
-      res.name = sub.name.postfix("*")
+      # Add or remove export mark
+      res.name = name.withExportMark(exported)
+      # We're only processing top-level routines
       mkTransformTuple(res, false)
+
+    of nnkIdentDefs:
+      let name = sub[0].stripExportMark
+      let exported = exporting.contains(name)
+      let res = sub.copyNimTree
+      res[0] = name.withExportMark(exported)
+      # We're only processing top-level definitions
+      # TODO: handle exports for object fields
+      mkTransformTuple(res, false)
+
     else:
       mkTransformTuple(sub, true)
 
@@ -1057,7 +1080,8 @@ macro typeclass*(id, signatureTree: untyped, args: varargs[untyped]): typed =
   let body = argsSeq[argsSeq.len - 1]
   let (constraintTrees, patterns) = parseTypeclassSignature(signatureTree)
 
-  let idTree = if options.exported: id.postfix("*") else: id
+  let idTreePostfixed = if options.exported: id.postfix("*") else: id
+  let idTree = id
   let idTreeCopy = idTree.copyNimTree
 
   # Pass the value through ``tc``.
@@ -1073,7 +1097,7 @@ macro typeclass*(id, signatureTree: untyped, args: varargs[untyped]): typed =
   let symSym = bindSym("symbol")
 
   result = quote do:
-    let `idTree` {.compileTime.} = `tcSym`
+    let `idTreePostfixed` {.compileTime.} = `tcSym`
     `injectSymbol`(`idTree`, `idTreeCopy`)
 
   for n in constraintTrees:

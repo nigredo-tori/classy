@@ -12,3 +12,4 @@ requires "nim >= 0.15.0"
 # Layout
 
 installFiles = @["classy.nim"]
+binDir = "bin"

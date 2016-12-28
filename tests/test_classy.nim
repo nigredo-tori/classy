@@ -307,3 +307,32 @@ suite "Miscellaneous features":
 
       instance Foo, int
       assert: fooVal == 0
+
+  test "Should strip export markers on import":
+    # With routines
+    shouldWork:
+      typeclass Foo, F:
+        proc fooVal*: F = 0
+
+      instance Foo, int
+
+    # With operators
+    shouldWork:
+      typeclass Bar, F:
+        proc `$@`*: F = 0
+
+      instance Bar, int
+
+    # With variables
+    shouldWork:
+      typeclass Baz, F:
+        let bazVal*: F = 0
+
+      instance Baz, int
+
+  test "Shouldn't allow incorrect instance options":
+    typeclass Foo, F:
+      discard
+
+    shouldFail:
+      instance Foo, int, invalid()
