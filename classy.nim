@@ -890,9 +890,6 @@ macro sampleMatches(a, b: typedesc): untyped =
     let a = aRaw.stripGenericAliases
     let b = bRaw.stripGenericAliases
 
-    # TODO: temporary workaround
-    const ntyAlias = macros.ntyArrayConstr
-
     if b.typeKind in { ntyGenericInst, ntyArray, ntySet, ntyRange, ntyPtr,
                        ntyRef, ntyVar, ntySequence, ntyOpenArray }:
       # `b` is an instantiation of a generic (or something like it -
