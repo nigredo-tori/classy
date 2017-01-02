@@ -4,16 +4,16 @@ env:
   # Nim branches to be tested against
   - BRANCH=master
   - BRANCH=devel
-  # TODO: find a good way to do this for the last Nim release
-  - BRANCH=v0.15.2
+  # Latest tagged version
+  - BRANCH=$(git ls-remote --tags http://github.com/nim-lang/Nim | grep -v {} | sed 's#.*refs/tags/##' | grep -e '^v[0-9.]\+$' | sort -rV | head -n 1)
 compiler:
   # Compiler shouldn't matter - we're writing macros here
   - gcc
 install:
   - |
-    if [ ! -x nim-$BRANCH/bin/nim ]; then
-      git clone -b $BRANCH --depth 1 git://github.com/nim-lang/nim nim-$BRANCH/
-      cd nim-$BRANCH
+    if [ ! -x nim/$BRANCH/bin/nim ]; then
+      git clone -b $BRANCH --depth 1 git://github.com/nim-lang/nim nim/$BRANCH/
+      pushd nim/$BRANCH
       git clone --depth 1 git://github.com/nim-lang/csources csources/
       cd csources
       sh build.sh
@@ -22,22 +22,21 @@ install:
       bin/nim c koch
       ./koch boot -d:release
     else
-      cd nim-$BRANCH
+      pushd nim/$BRANCH
       git fetch origin
       if ! git merge FETCH_HEAD | grep "Already up-to-date"; then
         bin/nim c koch
         ./koch boot -d:release
       fi
     fi
-    cd ..
+    popd
 before_script:
-    - export PATH="nim-$BRANCH/bin${PATH:+:$PATH}"
+    - export PATH="nim/$BRANCH/bin${PATH:+:$PATH}"
 script:
     - nim --cc:$CC tests
 cache:
   directories:
-    - nim-master
-    - nim-devel
+    - nim
 branches:
   except:
     - gh-pages
