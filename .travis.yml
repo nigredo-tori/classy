@@ -1,9 +1,11 @@
 # Copied from https://github.com/nim-lang/Nim/wiki/TravisCI
 language: c
 env:
-  # Build and test against the master and devel branches of Nim
+  # Nim branches to be tested against
   - BRANCH=master
   - BRANCH=devel
+  # TODO: find a good way to do this for the last Nim release
+  - BRANCH=v0.15.2
 compiler:
   # Compiler shouldn't matter - we're writing macros here
   - gcc

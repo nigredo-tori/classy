@@ -113,7 +113,11 @@ proc mkTransformTuple(newNode: NimNode, recurse: bool): auto =
 
 template fail(msg: string, n: NimNode = nil) =
   let errMsg = if n != nil: msg & ": " & $toStrLit(n) else: msg
-  error(errMsg, n)
+  when compiles(error("", nil.NimNode)):
+    error(errMsg, n)
+  else:
+    # Nim 0.15.2 and older
+    error(errMsg)
 
 proc arity(x: Typeclass): Natural {.compileTime.} =
   x.patterns.len
