@@ -152,6 +152,25 @@ suite "Multi-parameter typeclasses":
       shouldWork: instance TwoArgs, [int, string]
       shouldFail: instance TwoArgs, [int, string, float]
 
+  test "Should only inject used parameters":
+    type Identity[A] = object
+      a: A
+
+    shouldWork:
+      typeclass A, [F, G]:
+        proc foo(f: F) = discard
+      instance A, (X, Y) => [Identity[X], Identity[Y]]
+      foo[int](Identity[int](a: 123))
+
+    shouldWork:
+      typeclass B, [F, G]:
+        proc bar(f: F, g: G) = discard
+      instance B, (X) => [Identity[X], X]
+      bar[int](
+        Identity[int](a: 123),
+        123
+      )
+
 suite "Miscellaneous features":
   test "Skipping definitions":
     shouldWork:

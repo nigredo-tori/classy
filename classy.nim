@@ -1,4 +1,4 @@
-import macros, future
+import macros, future, intsets
 from sequtils import apply, map, zip, toSeq, applyIt, allIt, mapIt
 
 ## Classy
@@ -57,6 +57,8 @@ from sequtils import apply, map, zip, toSeq, applyIt, allIt, mapIt
 ##    before the typeclass is instantiated
 
 type
+  Unit = tuple[]
+
   AbstractPattern = object
     ## Type/pattern placeholder for typeclass declaration.
     ##
@@ -104,12 +106,20 @@ type
     exported: bool
 
   # https://github.com/nim-lang/Nim/issues/4952
-  TransformTuple = object
+  GenTransformTuple[S] = object
     newNode: NimNode
     recurse: bool
+    state: S
 
-proc mkTransformTuple(newNode: NimNode, recurse: bool): auto =
-  TransformTuple(newNode: newNode, recurse: recurse)
+  TransformTuple = GenTransformTuple[Unit]
+
+const unit: Unit = ()
+
+proc mkGenTransformTuple[S](newNode: NimNode, recurse: bool, state: S): auto =
+  GenTransformTuple[S](newNode: newNode, recurse: recurse, state: state)
+
+proc mkTransformTuple(newNode: NimNode, recurse: bool): TransformTuple =
+  mkGenTransformTuple(newNode, recurse, unit)
 
 template fail(msg: string, n: NimNode = nil) =
   let errMsg = if n != nil: msg & ": " & $toStrLit(n) else: msg
@@ -127,19 +137,37 @@ proc arity(x: TypeclassMember): Natural {.compileTime.} =
 
 proc replaceInBody(
   tree: NimNode,
-  substs: seq[(AbstractPattern, ConcretePattern)]
-): NimNode {.compileTime.}
+  substs: seq[(AbstractPattern, ConcretePattern)],
+  substIndices: IntSet
+): tuple[tree: NimNode, substIndices: IntSet]
+
+proc transformDown[S](
+  tree: NimNode,
+  f: (n: NimNode, s: S) -> GenTransformTuple[S],
+  s: S
+): (NimNode, S) {.compileTime.} =
+  let tup = f(tree.copyNimTree, s)
+  var resNode = tup.newNode
+  var resState = tup.state
+  if tup.recurse:
+    for i in 0..<resNode.len:
+      var resSub: NimNode
+      (resSub, resState) = transformDown(resNode[i], f, resState)
+      resNode[i] = resSub
+
+  (resNode, resState)
 
 proc transformDown(
   tree: NimNode,
-  f: NimNode -> TransformTuple
+  f: (n: NimNode) -> TransformTuple
 ): NimNode {.compileTime.} =
-  let tup = f(tree.copyNimTree)
-
-  result = tup.newNode
-  if tup.recurse:
-    for i in 0..<result.len:
-      result[i] = transformDown(result[i], f)
+  proc fs(n: NimNode, s: Unit): GenTransformTuple[Unit] {.closure.} =
+    f(n)
+  transformDown[tuple[]](
+    tree = tree,
+    f = fs,
+    s = unit
+  )[0]
 
 proc asTree(p: AbstractPattern): NimNode {.compileTime.} =
   ## Restore `p`'s tree form
@@ -296,6 +324,18 @@ proc replace(n: NimNode, subst: seq[(NimNode, NimNode)]): NimNode {.compileTime.
         return mkTransformTuple(pair[1], false)
     return mkTransformTuple(sub, true)
 
+proc containsSubtree(n: NimNode, sub: NimNode): bool =
+  var q = @[n]
+  while q.len > 0:
+    let cur = q.pop
+    if cur == sub:
+      return true
+    else:
+      for child in cur:
+        q.add(child)
+
+  return false
+
 # Ugly workaround for Nim bug:
 # https://github.com/nim-lang/Nim/issues/4939
 # TODO: remove this the second the bug is fixed
@@ -310,7 +350,7 @@ proc genSymParams(
   inParams: seq[NimNode],
   inPattern: NimNode
 ): tuple[params: seq[NimNode], pattern: NimNode] {.compileTime.} =
-  ## Replaces member parameters with unique symbols
+  ## Replace instance parameters with unique symbols
   var substitutions = newSeq[(NimNode, NimNode)]()
 
   result.params = inParams
@@ -318,6 +358,7 @@ proc genSymParams(
     let def = result.params[i]
     def.expectKind(nnkIdentDefs)
     let id = def[0]
+    id.expectKind({nnkIdent, nnkSym})
     let newId = genIdent($id.ident & "_")
     result.params[i][0] = newId
 
@@ -414,73 +455,122 @@ proc parseTypeclassOptions(
       fail("Illegal typeclass option: ", a)
 
 # Global for reuse in ``replaceInProcs``
-proc mkBodyWorker(substs: seq[(AbstractPattern, ConcretePattern)]): auto =
-  proc worker(sub: NimNode): TransformTuple =
-    for subst in substs:
+proc mkBodyWorker(
+  substs: seq[(AbstractPattern, ConcretePattern)]
+): (n: NimNode, s: IntSet) -> GenTransformTuple[IntSet] =
+  proc worker(sub: NimNode, substIndices0: IntSet): GenTransformTuple[IntSet] =
+    var substIndices = substIndices0
+    for ix, subst in substs:
       let (abstract, concrete) = subst
       if sub.matchesPattern(abstract):
-        let newSub = concrete.instantiate(
-          abstract, sub,
-          processParam = ((n: NimNode) => n.replaceInBody(substs))
-        )
-        return mkTransformTuple(newSub, false)
+        substIndices.incl(ix)
 
-    return mkTransformTuple(sub.copyNimTree, true)
+        proc processParam(n: NimNode): NimNode =
+          let replaced = n.replaceInBody(substs, substIndices)
+          substIndices = replaced.substIndices
+          replaced.tree
+
+        let newSub = concrete.instantiate(
+          abstract,
+          sub,
+          processParam
+        )
+        return mkGenTransformTuple(newSub, false, substIndices)
+
+    return mkGenTransformTuple(sub.copyNimTree, true, substIndices)
 
   worker
 
 proc replaceInBody(
   tree: NimNode,
+  substs: seq[(AbstractPattern, ConcretePattern)],
+  substIndices: IntSet
+): tuple[tree: NimNode, substIndices: IntSet] =
+  ## Replace ``substs`` in a tree.
+  ## Add indices of any matching substs to `substIndices`
+  transformDown[IntSet](
+    tree,
+    mkBodyWorker(substs),
+    substIndices
+  )
+
+proc processProcParams(
+  paramsTree: NimNode,
   substs: seq[(AbstractPattern, ConcretePattern)]
-): NimNode =
-  ## Replace ``substs`` in a tree
-  transformDown(tree, mkBodyWorker(substs))
+): tuple[tree: NimNode, substIndices: IntSet] =
+  paramsTree.expectKind(nnkFormalParams)
+  var substIndices = initIntSet()
+  proc processType(tree: NimNode, substIndices: var IntSet): NimNode =
+    let res = tree.replaceInBody(substs, substIndices)
+    substIndices = res.substIndices
+    res.tree
+
+  var res = newNimNode(nnkFormalParams)
+
+  res.add(paramsTree[0].processType(substIndices))
+
+  for i in 1..<paramsTree.len:
+    let oldParam = paramsTree[i]
+    var newParam = oldParam.copyNimTree
+    newParam[1] = oldParam[1].processType(substIndices)
+    res.add(newParam)
+
+  (res, substIndices)
 
 proc replaceInProcs(
   tree: NimNode,
-  params: seq[NimNode],
+  instanceParams: seq[NimNode],
   substs: seq[(AbstractPattern, ConcretePattern)]
 ): NimNode {.compileTime.} =
-  ## Traverse ``tree`` looking for top-level procs; inject ``params`` and
+  ## Traverse ``tree`` looking for top-level procs; inject ``instanceParams`` and
   ## replace ``substs`` in each one.
   ## Otherwise behaves the same as ``ReplaceInBody`` - replaces abstract
   ## patterns if encountered.
 
-  # Fallback worker function
-  let bodyWorker = mkBodyWorker(substs)
-
   proc worker(sub: NimNode): TransformTuple =
     case sub.kind
     of RoutineNodes:
-      # Inject method parameters to proc's generic param list
       # This will be returned
       var res = sub
 
-      var genParams = sub[2]
-      expectKind(genParams, {nnkEmpty, nnkGenericParams})
-      if genParams.kind == nnkEmpty and params.len > 0:
-        genParams = newNimNode(nnkGenericParams)
-
-      for p in params:
-        genParams.add(p.copyNimTree)
-
-      res[2] = genParams
-
       # Replace in formal parameters
-      let formalParams = sub.params
-      res.params = formalParams.replaceInBody(substs)
+      let (newParams, substIndices0) =
+        sub.params.processProcParams(substs)
+      res.params = newParams
 
       # Replace in proc body
-      let procBody = sub.body
-      res.body = procBody.replaceInBody(substs)
+      let (newBody, substIndices1) =
+        sub.body.replaceInBody(substs, substIndices0)
+      res.body = newBody
+
+      # Inject instance parameters to proc's generic param list
+      var genParams = sub[2]
+      expectKind(genParams, {nnkEmpty, nnkGenericParams})
+      if genParams.kind == nnkEmpty and instanceParams.len > 0:
+        genParams = newNimNode(nnkGenericParams)
+
+      var instanceParamIndices = initIntSet()
+      for i, param in instanceParams:
+        for j, subst in substs:
+          if j in substIndices1 and
+             subst[1].tree.containsSubtree(param[0]):
+            instanceParamIndices.incl(i)
+            break
+
+      for i in instanceParamIndices:
+        genParams.add(instanceParams[i].copyNimTree)
+
+      res[2] = genParams
 
       # Do not recurse - we already replaced everything using ``replaceInBody``
       mkTransformTuple(res, false)
     else:
-      # Notice that arguments of a replaced constructor are handled by
+      # Note that arguments of a replaced constructor are handled by
       # ``bodyWorker``, meaning any proc defs inside them don't get parameter
       # injection. This is probably the right thing to do, though.
-      bodyWorker(sub)
+      let substIndices = initIntSet()
+      let genTup = mkBodyWorker(substs)(sub, substIndices)
+      mkTransformTuple(genTup.newNode, true)
 
   transformDown(tree, worker)
 
