@@ -210,7 +210,7 @@ suite "Miscellaneous features":
           $a & "," & $s
 
       instance Some, A => Option[A]
-      assert: foo(123, some("foo")) == "123,Some(foo)"
+      assert: foo(123, some(true)) == "123,Some(true)"
 
   test "Should fail for constructor without arguments in body":
     shouldFail:
