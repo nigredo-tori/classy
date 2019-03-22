@@ -230,7 +230,7 @@ suite "Miscellaneous features":
     # With routines
     shouldWork:
       typeclass Foo, F:
-        proc fooVal*: F = 0
+        proc fooProc*: F = 0
 
       instance Foo, int
 

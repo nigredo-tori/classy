@@ -402,6 +402,11 @@ proc parseMember(
     patterns: patterns
   )
 
+proc stripAccQuoted(n: NimNode): NimNode =
+  case n.kind:
+    of nnkAccQuoted: n[0]
+    else: n
+
 proc parseMemberOptions(
   args: seq[NimNode]
 ): MemberOptions =
@@ -420,7 +425,7 @@ proc parseMemberOptions(
       # Don't check for duplicate symbols
       for i in 1..<a.len:
         a[i].expectKind({nnkIdent, nnkAccQuoted})
-        result.skipping.add(a[i])
+        result.skipping.add(stripAccQuoted(a[i]))
 
     elif a.kind == nnkCall and a[0].eqIdent("exporting"):
       if result.exporting.kind != eoNone:
@@ -431,7 +436,7 @@ proc parseMemberOptions(
         if a[i].eqIdent("_") and a.len > 2:
           # Can't mix wildcard with other exporting
           fail("Invalid exporting clause", a)
-        acc.add(a[i])
+        acc.add(stripAccQuoted(a[i]))
 
       if acc.len == 1 and acc[0].eqIdent("_"):
         result.exporting = ExportOptions(kind: eoAll)
@@ -613,11 +618,11 @@ proc addExportMarks(
   proc worker(sub: NimNode): TransformTuple =
     case sub.kind
     of RoutineNodes:
-      let name = sub.name.stripExportMark
-      let exported = exporting.contains(name)
+      let exported = exporting.contains(sub.name)
       let res = sub.copyNimTree
       # Add or remove export mark
-      res.name = name.withExportMark(exported)
+      # `name` proc strips quoting and postfixes - but we need them!
+      res[0] = sub[0].stripExportMark.withExportMark(exported)
       # We're only processing top-level routines
       mkTransformTuple(res, false)
 
