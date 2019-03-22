@@ -589,7 +589,7 @@ proc removeSkippedProcs(
   proc worker(sub: NimNode): TransformTuple =
     case sub.kind
     of RoutineNodes:
-      let nameNode = sub.name
+      let nameNode = stripAccQuoted(sub.name)
       if nameNode in skipping:
         mkTransformTuple(newEmptyNode(), false)
       else:
