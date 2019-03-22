@@ -1,39 +1,26 @@
 # Copied from https://github.com/nim-lang/Nim/wiki/TravisCI
 language: c
 env:
-  # Nim branches to be tested against
-  - BRANCH=master
-  - BRANCH=devel
-  # Latest tagged version
-  - BRANCH=$(git ls-remote --tags http://github.com/nim-lang/Nim | grep -v {} | sed 's#.*refs/tags/##' | grep -e '^v[0-9.]\+$' | sort -rV | head -n 1)
+  # Nim versions to test against
+  - CHOOSENIM_CHOOSE_VERSION=devel
+  - CHOOSENIM_CHOOSE_VERSION=0.19.4
+  - CHOOSENIM_CHOOSE_VERSION=0.19.0
+  - CHOOSENIM_CHOOSE_VERSION=0.18.0
+  - CHOOSENIM_CHOOSE_VERSION=0.17.2
+  - CHOOSENIM_CHOOSE_VERSION=0.16.0
+  - CHOOSENIM_CHOOSE_VERSION=0.15.2
+
 compiler:
   # Compiler shouldn't matter - we're writing macros here
   - gcc
 install:
-  - |
-    if [ ! -x nim/$BRANCH/bin/nim ]; then
-      git clone -b $BRANCH --depth 1 git://github.com/nim-lang/nim nim/$BRANCH/
-      pushd nim/$BRANCH
-      git clone --depth 1 git://github.com/nim-lang/csources csources/
-      cd csources
-      sh build.sh
-      cd ..
-      rm -rf csources
-      bin/nim c koch
-      ./koch boot -d:release
-    else
-      pushd nim/$BRANCH
-      git fetch origin
-      if ! git merge FETCH_HEAD | grep "Already up-to-date"; then
-        bin/nim c koch
-        ./koch boot -d:release
-      fi
-    fi
-    popd
+  - curl https://nim-lang.org/choosenim/init.sh -sSf | sh -s -- -y
 before_script:
-    - export PATH="nim/$BRANCH/bin${PATH:+:$PATH}"
+  - set -e
+  - export CHOOSENIM_NO_ANALYTICS=1
+  - export PATH=/home/travis/.nimble/bin:$PATH
 script:
-    - nim --cc:$CC tests
+  - nim --cc:$CC tests
 cache:
   directories:
     - nim
