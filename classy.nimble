@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.0.3"
+version       = "0.0.4"
 author        = "nigredo-tori"
 description   = "typeclasses for Nim"
 license       = "Unlicense"
