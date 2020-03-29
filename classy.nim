@@ -271,7 +271,7 @@ proc parseMemberParams(
   ## parse instance parameters in following forms:
   ## ``A``, ``(A, B)``, ``(A: T1, B)`` etc.
 
-  if tree.kind == nnkPar:
+  if tree.kind in {nnkPar, nnkTupleConstr}:
     result = toSeq(tree.children)
   else:
     result = @[tree]
