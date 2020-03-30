@@ -2,7 +2,7 @@
 
 [![Software License][ico-license]](license.md)
 ![Stability][ico-stability]
-[![Travis][ico-travis]](https://travis-ci.org/nigredo-tori/classy)
+[![Travis][ico-travis]](https://travis-ci.com/nigredo-tori/classy)
 
 [![nimble](https://raw.githubusercontent.com/yglukhov/nimble-tag/master/nimble_js.png)](https://github.com/yglukhov/nimble-tag)
 
