@@ -265,13 +265,19 @@ proc instantiate(
     # Members without parameters do not have brackets
     concrete.tree.copyNimTree
 
+
+when declared(nnkTupleConstr):
+  const TupleConstrKinds = {nnkPar, nnkTupleConstr}
+else:
+  const TupleConstrKinds = {nnkPar}
+
 proc parseMemberParams(
   tree: NimNode
 ): seq[NimNode] =
   ## parse instance parameters in following forms:
   ## ``A``, ``(A, B)``, ``(A: T1, B)`` etc.
 
-  if tree.kind in {nnkPar, nnkTupleConstr}:
+  if tree.kind in TupleConstrKinds:
     result = toSeq(tree.children)
   else:
     result = @[tree]
@@ -669,7 +675,7 @@ proc instanceImpl(
 # defined variables
 var tc {.compiletime.} : Typeclass
 
-macro typeclass*(id, patternsTree: untyped, args: varargs[untyped]): typed =
+macro typeclass*(id, patternsTree: untyped, args: varargs[untyped]): untyped =
   ## Define typeclass with name ``id``.
   ##
   ## This creates a compile-time variable with name ``id``.
