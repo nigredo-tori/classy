@@ -205,12 +205,13 @@ suite "Miscellaneous features":
 
   test "Member parameters should not cause collision":
     shouldWork:
-      typeclass Some, S:
-        proc foo[A](a: A, s: S): string =
-          $a & "," & $s
+      typeclass TC, S:
+        proc foo[A](a: A, s: S): (A, S) =
+          (a, s)
 
-      instance Some, A => Option[A]
-      assert: foo(123, some(true)) == "123,Some(true)"
+      instance TC, A => Option[A]
+      echo foo(123, some(true))
+      assert: foo(123, some(true)) == (123, some(true))
 
   test "Should fail for constructor without arguments in body":
     shouldFail:
