@@ -1,4 +1,4 @@
-import macros, future, intsets
+import macros, sugar, intsets
 from sequtils import apply, map, zip, toSeq, applyIt, allIt, mapIt
 
 ## Classy
